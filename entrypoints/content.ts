@@ -164,52 +164,63 @@ export default defineContentScript({
       buttonContainer.dataset.customButtonAdded = 'true';
     }
 
-    const checkLatestPlan = () => {
-      const chatContainer = document.querySelector('section[aria-label="Chat"]');
-      if (!chatContainer) return;
+    // --- Observer and Control Logic ---
+    let observer: MutationObserver | null = null;
 
-      const allMessages = chatContainer.querySelectorAll<HTMLElement>(':scope > [data-message-id]');
-      if (allMessages.length === 0) return;
+    function startDetector() {
+      if (observer) return; // Already running
+      console.log(`${LOG_PREFIX} Starting observer.`);
 
-      const lastMessageEl = allMessages[allMessages.length - 1];
-      const buttonContainer = lastMessageEl.querySelector<HTMLElement>('.flex.items-center.gap-2.flex-wrap');
+      const checkLatestPlan = () => {
+        const chatContainer = document.querySelector('section[aria-label="Chat"]');
+        if (!chatContainer) return;
+        const allMessages = chatContainer.querySelectorAll<HTMLElement>(':scope > [data-message-id]');
+        if (allMessages.length === 0) return;
+        const lastMessageEl = allMessages[allMessages.length - 1];
+        const buttonContainer = lastMessageEl.querySelector<HTMLElement>('.flex.items-center.gap-2.flex-wrap');
+        if (!buttonContainer || buttonContainer.dataset.customButtonAdded === 'true') return;
+        const isPlanStructure = lastMessageEl.querySelector('h2')?.textContent?.includes('Plan') || buttonContainer.textContent?.includes('Implement');
+        if (!isPlanStructure) return;
+        const hasEnabledButton = Array.from(buttonContainer.querySelectorAll('button')).some(b => !b.disabled);
+        if (hasEnabledButton) {
+          console.log(`${LOG_PREFIX} 🎉 Latest message is a complete plan. Appending button.`);
+          appendCustomButton(lastMessageEl);
+        }
+      };
 
-      if (!buttonContainer || buttonContainer.dataset.customButtonAdded === 'true') {
-        return;
+      observer = new MutationObserver(checkLatestPlan);
+
+      const startupInterval = setInterval(() => {
+        const chatContainer = document.querySelector('section[aria-label="Chat"]');
+        if (chatContainer) {
+          clearInterval(startupInterval);
+          if (observer) {
+            console.log(`${LOG_PREFIX} Chat container found. Attaching observer.`);
+            observer.observe(chatContainer, { childList: true, subtree: true, attributes: true });
+            checkLatestPlan();
+          }
+        }
+      }, 500);
+    }
+
+    function stopDetector() {
+      if (observer) {
+        console.log(`${LOG_PREFIX} Stopping observer.`);
+        observer.disconnect();
+        observer = null;
       }
+    }
 
-      const isPlanStructure = 
-        lastMessageEl.querySelector('h2')?.textContent?.includes('Plan') ||
-        buttonContainer.textContent?.includes('Implement');
+    console.log(`${LOG_PREFIX} Initializing...`);
+    
+    (async () => {
+      const isEnabled = await storage.getItem('local:extensionEnabled') !== false;
+      if (isEnabled) startDetector();
+    })();
 
-      if (!isPlanStructure) {
-        return;
-      }
-
-      const hasEnabledButton = Array.from(buttonContainer.querySelectorAll('button')).some(b => !b.disabled);
-
-      if (hasEnabledButton) {
-        console.log(`${LOG_PREFIX} 🎉 Latest message is a complete plan. Appending button.`);
-        appendCustomButton(lastMessageEl);
-      }
-    };
-
-    const observer = new MutationObserver(() => {
-      checkLatestPlan();
+    storage.watch<boolean>('local:extensionEnabled', (isEnabled) => {
+      console.log(`${LOG_PREFIX} Extension state changed to: ${isEnabled ? 'Enabled' : 'Disabled'}`);
+      isEnabled !== false ? startDetector() : stopDetector();
     });
-
-    const startupInterval = setInterval(() => {
-      const chatContainer = document.querySelector('section[aria-label="Chat"]');
-      if (chatContainer) {
-        clearInterval(startupInterval);
-        console.log(`${LOG_PREFIX} Chat container found. Attaching observer.`);
-        observer.observe(chatContainer, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-        });
-        checkLatestPlan();
-      }
-    }, 500);
   },
 });

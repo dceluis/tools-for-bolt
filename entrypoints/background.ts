@@ -109,6 +109,14 @@ async function createOrUpdateIgnoreFile(content: string) {
       saveButton.parentElement?.click();
 
       return { ok: true, path: filePath, note: 'File updated successfully.' };
+    } else {
+      // File not found. Special handling for cleanup.
+      if (content === '*') {
+        console.log('[DevAction] .bolt/ignore not found. No cleanup needed.');
+        return { ok: true, path: filePath, note: 'File did not exist, no cleanup needed.' };
+      }
+      // For any other content, not finding the file is an error because this script cannot create files.
+      return { ok: false, error: 'File .bolt/ignore not found. Cannot perform action.' };
     }
 
   } catch (e: any) {
@@ -167,9 +175,10 @@ export default defineBackground(() => {
   }
 
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    // The tabId is not part of the message for most commands, but it's essential for execution.
-    // We derive it from the 'sender' object for reliability, especially for content script messages.
-    const tabId = sender.tab?.id;
+    // ** THE FIX IS HERE **
+    // Get the tabId from the message if provided (from popup), otherwise from the sender (from content script).
+    const tabId = msg.tabId || sender.tab?.id;
+
     if (!msg || !msg.cmd) {
       return false; // Ignore invalid messages
     }
@@ -202,6 +211,23 @@ export default defineBackground(() => {
               world: 'MAIN',
               func: createOrUpdateIgnoreFile,
               args: [msg.content],
+            });
+            sendResponse(result.result);
+          } catch (e) {
+            sendResponse({ ok: false, error: (e as Error).message });
+          }
+        })();
+        return true;
+
+      case 'cleanupIgnoreFile':
+        (async () => {
+          if (!tabId) { sendResponse({ ok: false, error: "Could not identify sender tab."}); return; }
+          try {
+            const [result] = await browser.scripting.executeScript({
+              target: { tabId: tabId },
+              world: 'MAIN',
+              func: createOrUpdateIgnoreFile,
+              args: ['*'], // '*' is the content for cleaning up (ignore everything)
             });
             sendResponse(result.result);
           } catch (e) {

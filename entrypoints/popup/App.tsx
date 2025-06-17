@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { browser } from "wxt/browser";
+import { storage } from "#imports";
 import './App.css';
 
 // Type for the detailed result from the background script
@@ -18,6 +19,8 @@ type IgnoreWriteResult = {
 };
 
 export default function App() {
+  const [isEnabled, setIsEnabled] = useState(true);
+  const [cleanupStatus, setCleanupStatus] = useState<'idle' | 'working' | 'finished'>('idle');
   const [status, setStatus] = useState<'idle' | 'working' | 'finished'>('idle');
   const [text, setText] = useState('');
   const [result, setResult] = useState<ProcessResult | null>(null);
@@ -25,6 +28,12 @@ export default function App() {
   // New state for the ignore file action
   const [ignoreStatus, setIgnoreStatus] = useState<'idle' | 'working' | 'finished'>('idle');
   const [ignoreResult, setIgnoreResult] = useState<IgnoreWriteResult | null>(null);
+
+  useEffect(() => {
+    storage.getItem<boolean>('local:extensionEnabled').then((extensionEnabled) => {
+      setIsEnabled(extensionEnabled !== false); // Default to true
+    });
+  }, []);
 
   const send = async () => {
     if (!text.trim() || status === 'working') return;
@@ -55,6 +64,26 @@ export default function App() {
     }
   };
 
+  const handleToggleChange = async (newEnabledState: boolean) => {
+    setIsEnabled(newEnabledState);
+    await storage.setItem('local:extensionEnabled', newEnabledState);
+
+    if (!newEnabledState) {
+      // If disabling, run cleanup.
+      setCleanupStatus('working');
+      try {
+        const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) throw new Error('Could not find active tab to run cleanup.');
+        await browser.runtime.sendMessage({ cmd: 'cleanupIgnoreFile', tabId: tab.id });
+      } catch (e) {
+        console.error('Cleanup failed:', e);
+      } finally {
+        setCleanupStatus('finished');
+        // Hide status message after a few seconds
+        setTimeout(() => setCleanupStatus('idle'), 3000);
+      }
+    }
+  };
   const handleWriteIgnore = async () => {
     setIgnoreStatus('working');
     setIgnoreResult(null);
@@ -138,45 +167,59 @@ export default function App() {
 
   return (
     <main style={{ padding: '1rem', width: 280, backgroundColor: '#242424', color: 'rgba(255, 255, 255, 0.87)' }}>
-      <h3 style={{ marginTop: 0 }}>Inject & Save</h3>
-      <textarea
-        rows={5}
-        style={{ width: '100%', boxSizing: 'border-box', marginBottom: '0.5rem' }}
-        placeholder="Type text to inject..."
-        value={text}
-        onChange={e => setText(e.target.value)}
-        disabled={isWorking}
-      />
-
-      {showReset ? (
-        <button style={{ width: '100%' }} onClick={reset}>Try Again</button>
-      ) : (
-        <button style={{ width: '100%' }} onClick={send} disabled={isWorking || !text.trim()}>
-          {isWorking ? 'Working...' : 'Run'}
-        </button>
-      )}
-
-      {renderStatus()}
-
-      {/* --- Developer Tools Section --- */}
-      <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #444' }}>
-        <h4 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Developer Actions</h4>
-        <button
-          style={{ width: '100%', marginBottom: '0.5rem' }}
-          onClick={handleWriteIgnore}
-          disabled={ignoreStatus === 'working'}
-        >
-          {ignoreStatus === 'working' ? 'Working...' : 'Write .bolt/ignore file'}
-        </button>
-        {ignoreStatus === 'finished' && ignoreResult && (
-          <p style={{ color: ignoreResult.ok ? 'lightgreen' : 'salmon', fontSize: '0.9em', margin: 0, wordBreak: 'break-word' }}>
-            {ignoreResult.ok
-              ? `✅ Success! ${ignoreResult.note || 'File updated.'}`
-              : `❌ Error: ${ignoreResult.error}`
-            }
-          </p>
-        )}
+      <div className="toggle-container">
+        <h3 style={{ margin: 0, fontSize: '1.1em' }}>Bolt Assistant</h3>
+        <label className="switch">
+          <input type="checkbox" checked={isEnabled} onChange={(e) => handleToggleChange(e.target.checked)} />
+          <span className="slider round"></span>
+        </label>
       </div>
+
+      {isEnabled ? (
+        <>
+          <h4 className="section-header">Inject & Save</h4>
+          <textarea
+            rows={5}
+            style={{ width: '100%', boxSizing: 'border-box', marginBottom: '0.5rem' }}
+            placeholder="Type text to inject..."
+            value={text}
+            onChange={e => setText(e.target.value)}
+            disabled={isWorking}
+          />
+
+          {showReset ? (
+            <button style={{ width: '100%' }} onClick={reset}>Try Again</button>
+          ) : (
+            <button style={{ width: '100%' }} onClick={send} disabled={isWorking || !text.trim()}>
+              {isWorking ? 'Working...' : 'Run'}
+            </button>
+          )}
+
+          {renderStatus()}
+
+          {/* --- Developer Tools Section --- */}
+          <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #444' }}>
+            <h4 className="section-header">Developer Actions</h4>
+            <button
+              style={{ width: '100%', marginBottom: '0.5rem' }}
+              onClick={handleWriteIgnore}
+              disabled={ignoreStatus === 'working'}
+            >
+              {ignoreStatus === 'working' ? 'Working...' : 'Write .bolt/ignore file'}
+            </button>
+            {ignoreStatus === 'finished' && ignoreResult && (
+              <p style={{ color: ignoreResult.ok ? 'lightgreen' : 'salmon', fontSize: '0.9em', margin: 0, wordBreak: 'break-word' }}>
+                {ignoreResult.ok
+                  ? `✅ Success! ${ignoreResult.note || 'File updated.'}`
+                  : `❌ Error: ${ignoreResult.error}`
+                }
+              </p>
+            )}
+          </div>
+        </>
+      ) : (
+        <p style={{ textAlign: 'center', color: '#888', marginTop: '2rem' }}>Extension is disabled. {cleanupStatus === 'working' && 'Cleaning up...'}</p>
+      )}
     </main>
   );
 }
