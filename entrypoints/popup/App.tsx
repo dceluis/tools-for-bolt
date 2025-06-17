@@ -84,6 +84,12 @@ export default function App() {
       }
     }
   };
+
+  const handleOpenOptions = (e: React.MouseEvent) => {
+    e.preventDefault();
+    browser.runtime.openOptionsPage();
+  };
+
   const handleWriteIgnore = async () => {
     setIgnoreStatus('working');
     setIgnoreResult(null);
@@ -168,7 +174,14 @@ export default function App() {
   return (
     <main style={{ padding: '1rem', width: 280, backgroundColor: '#242424', color: 'rgba(255, 255, 255, 0.87)' }}>
       <div className="toggle-container">
-        <h3 style={{ margin: 0, fontSize: '1.1em' }}>Bolt Assistant</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <h3 style={{ margin: 0, fontSize: '1.1em' }}>Bolt Assistant</h3>
+          <a href="#" onClick={handleOpenOptions} title="Settings" className="settings-link">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style={{ display: 'block' }}>
+              <path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311a1.464 1.464 0 0 1-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/>
+            </svg>
+          </a>
+        </div>
         <label className="switch">
           <input type="checkbox" checked={isEnabled} onChange={(e) => handleToggleChange(e.target.checked)} />
           <span className="slider round"></span>

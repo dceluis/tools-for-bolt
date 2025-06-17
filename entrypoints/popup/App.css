@@ -118,3 +118,15 @@ input:checked + .slider:before {
 .slider.round:before {
   border-radius: 50%;
 }
+
+.settings-link {
+  display: flex;
+  align-items: center;
+  color: #aaa;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.settings-link:hover {
+  color: #fff;
+}
