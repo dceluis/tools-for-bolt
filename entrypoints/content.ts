@@ -190,6 +190,30 @@ export default defineContentScript({
     const NODE_DEPTH_PADDING = 8;
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    /* --------------------------------------------------------------- *
+     *  Helper: open `.bolt/` folder so its children are present       *
+     * --------------------------------------------------------------- */
+    async function ensureBoltFolderExpanded() {
+      const fileTreeContainer = document
+        .querySelector(EDITOR_PANEL_SELECTOR)
+        ?.closest('.flex.flex-col');
+      if (!fileTreeContainer) return;
+
+      const collapsedBolt = Array.from(
+        fileTreeContainer.querySelectorAll<HTMLElement>(
+          `${COLLAPSED_FOLDER_SELECTOR}`,
+        ),
+      ).find(btn =>
+        btn
+          .querySelector<HTMLElement>(FILE_NAME_SELECTOR)
+          ?.textContent?.trim() === '.bolt',
+      );
+      if (collapsedBolt) {
+        collapsedBolt.click();
+        await wait(250);
+      }
+    }
+
     async function getFileTreeAsList(): Promise<string[]> {
         console.log(`${LOG_PREFIX_TREE} Starting file tree extraction.`);
         const fileTreeContainer = document.querySelector(EDITOR_PANEL_SELECTOR)?.closest('.flex.flex-col');
@@ -573,6 +597,7 @@ export default defineContentScript({
             }
 
             /* 2️⃣  Locate & open .bolt/ignore inside the file-tree. */
+            await ensureBoltFolderExpanded();
             const el = findFileElementInTree('/home/project/.bolt/ignore');
             if (!el) {
               console.warn('[MiniToolbar] .bolt/ignore not found.');

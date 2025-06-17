@@ -20,6 +20,43 @@ async function createOrUpdateIgnoreFile(content: string) {
   const GENERATED_END   = '# ==== BOLT-ASSISTANT AUTO-GENERATED END ====';
   const GENERATED_WARN  = '# WARNING: This section is managed automatically by Bolt Assistant – any manual edits here will be overwritten.';
 
+  /* ------------------------------------------------------------------ *
+   *  Make sure the “Code” tab is selected and the `.bolt` folder open   *
+   * ------------------------------------------------------------------ */
+  async function ensureWorkbenchReady() {
+    /* 1️⃣ activate Code tab so the tree is rendered */
+    const headerSel = '.z-workbench .flex.items-center.px-3.py-2.border-b';
+    const header    = document.querySelector<HTMLElement>(headerSel);
+    if (header) {
+      const codeTab = Array.from(header.querySelectorAll('button'))
+        .find(b => b.textContent?.trim().toLowerCase() === 'code');
+      if (codeTab && codeTab.getAttribute('aria-pressed') !== 'true') {
+        codeTab.click();
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+
+    /* 2️⃣ expand `.bolt/` if it’s still collapsed */
+    const treeRoot = document
+      .querySelector('button.flex.items-center.w-full')
+      ?.closest('.flex.flex-col');
+    if (!treeRoot) return;
+
+    const collapsedBolt = Array.from(
+      treeRoot.querySelectorAll<HTMLElement>(
+        'button.flex.items-center.w-full:has(.i-ph\\:caret-right)',
+      ),
+    ).find(btn =>
+      btn
+        .querySelector<HTMLElement>('.truncate.w-full.text-left')
+        ?.textContent?.trim() === '.bolt',
+    );
+    if (collapsedBolt) {
+      collapsedBolt.click();
+      await new Promise(r => setTimeout(r, 250));
+    }
+  }
+
   /** Merge or remove the generated section, returning updated text + flag. */
   function mergeGeneratedSection(
     original: string,
@@ -116,6 +153,7 @@ async function createOrUpdateIgnoreFile(content: string) {
 
   try {
     // --- PATH A: Try to find and click the file if it exists ---
+    await ensureWorkbenchReady();
     console.log('[DevAction] Searching for file in tree:', filePath);
     const fileElement = findFileElementInTree(filePath);
 
