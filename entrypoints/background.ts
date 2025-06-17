@@ -14,7 +14,45 @@ async function createOrUpdateIgnoreFile(content: string) {
   const filePath = '/home/project/.bolt/ignore';
   const fileName = '.ignore';
   const folderName = '.bolt';
-  
+
+  /* ───── Section-ownership constants ───────────────────────────────────── */
+  const GENERATED_START = '# ==== BOLT-ASSISTANT AUTO-GENERATED START ====';
+  const GENERATED_END   = '# ==== BOLT-ASSISTANT AUTO-GENERATED END ====';
+  const GENERATED_WARN  = '# WARNING: This section is managed automatically by Bolt Assistant – any manual edits here will be overwritten.';
+
+  /** Merge or remove the generated section, returning updated text + flag. */
+  function mergeGeneratedSection(
+    original: string,
+    generatedBody: string,          // “*” → cleanup
+  ): { merged: string; changed: boolean } {
+    const sectionRE = new RegExp(`${GENERATED_START}[\\s\\S]*?${GENERATED_END}`, 'm');
+
+    /* ── Cleanup: strip section if it exists ────────────────────────────── */
+    if (generatedBody === '*') {
+      if (!sectionRE.test(original)) return { merged: original, changed: false };
+      const cleaned = original
+        .replace(sectionRE, '')
+        .replace(/\n{3,}/g, '\n\n')         // collapse extra blank lines
+        .trimStart();
+      return { merged: cleaned, changed: true };
+    }
+
+    /* ── Compose replacement block ──────────────────────────────────────── */
+    const newBlock = [
+      GENERATED_START,
+      GENERATED_WARN,
+      generatedBody.trim(),
+      GENERATED_END,
+    ].join('\n');
+
+    const merged = sectionRE.test(original)
+      ? original.replace(sectionRE, newBlock)             // replace existing
+      : (original.trimEnd() ? original + '\n\n' : '') +   // append if absent
+        newBlock + '\n';
+
+    return { merged, changed: merged !== original };
+  }
+
   // A robust helper to wait for elements to appear and be ready.
   function waitForElement<T extends Element>(selector: string, timeout = 10000, root: Document | Element = document): Promise<T> {
     return new Promise((resolve, reject) => {
@@ -91,14 +129,17 @@ async function createOrUpdateIgnoreFile(content: string) {
       if (!cmView) throw new Error('CodeMirror instance not found after opening file.');
 
       const currentContent = cmView.state.doc.toString();
-      if (currentContent === content) {
-        console.log('[DevAction] File content is already up to date. No changes needed.');
+      /* ── Merge our section (or clean up) ──────────────────────────────── */
+      const { merged: newContent, changed } = mergeGeneratedSection(currentContent, content);
+
+      if (!changed) {
+        console.log('[DevAction] Generated section already up-to-date – nothing to do.');
         return { ok: true, path: filePath, note: 'File content already up to date.' };
       }
 
       console.log('[DevAction] Editor loaded. Injecting new content...');
       cmView.dispatch({
-        changes: { from: 0, to: cmView.state.doc.length, insert: content },
+        changes: { from: 0, to: cmView.state.doc.length, insert: newContent },
         userEvent: 'input',
       });
 
@@ -108,7 +149,7 @@ async function createOrUpdateIgnoreFile(content: string) {
       console.log('[DevAction] Clicking save...');
       saveButton.parentElement?.click();
 
-      return { ok: true, path: filePath, note: 'File updated successfully.' };
+      return { ok: true, path: filePath, note: changed ? 'Generated section updated.' : 'No changes needed.' };
     } else {
       // File not found. Special handling for cleanup.
       if (content === '*') {
