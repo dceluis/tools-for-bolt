@@ -1,4 +1,8 @@
 // file: entrypoints/background.ts
+import { storage } from '#imports';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
+import { generateText } from 'ai';
 
 /**
  * The single, powerful injected script that handles the entire file operation.
@@ -163,21 +167,25 @@ export default defineBackground(() => {
   }
 
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (!msg || !msg.cmd || !msg.tabId) {
-      return false;
+    // The tabId is not part of the message for most commands, but it's essential for execution.
+    // We derive it from the 'sender' object for reliability, especially for content script messages.
+    const tabId = sender.tab?.id;
+    if (!msg || !msg.cmd) {
+      return false; // Ignore invalid messages
     }
 
     switch (msg.cmd) {
       case 'injectAndSave':
         (async () => {
+          if (!tabId) { sendResponse({ ok: false, error: "Could not identify sender tab."}); return; }
           try {
-            const probeResults = await browser.scripting.executeScript({ target: { tabId: msg.tabId, allFrames: true }, world: 'MAIN', func: findEditorFrame });
+            const probeResults = await browser.scripting.executeScript({ target: { tabId: tabId, allFrames: true }, world: 'MAIN', func: findEditorFrame });
             const targetFrame = probeResults.find(r => r.result === true);
             if (!targetFrame) {
               sendResponse({ ok: false, data: { success: false, step: 'inject', error: 'The CodeMirror editor could not be found.' } });
               return;
             }
-            const [result] = await browser.scripting.executeScript({ target: { tabId: msg.tabId, frameIds: [targetFrame.frameId] }, world: 'MAIN', func: injectAndSave, args: [msg.text] });
+            const [result] = await browser.scripting.executeScript({ target: { tabId: tabId, frameIds: [targetFrame.frameId] }, world: 'MAIN', func: injectAndSave, args: [msg.text] });
             sendResponse({ ok: true, data: result.result });
           } catch (e) {
             sendResponse({ ok: false, data: { success: false, step: 'inject', error: (e as Error).message } });
@@ -187,9 +195,10 @@ export default defineBackground(() => {
 
       case 'createOrUpdateIgnoreFile':
         (async () => {
+          if (!tabId) { sendResponse({ ok: false, error: "Could not identify sender tab."}); return; }
           try {
             const [result] = await browser.scripting.executeScript({
-              target: { tabId: msg.tabId },
+              target: { tabId: tabId },
               world: 'MAIN',
               func: createOrUpdateIgnoreFile,
               args: [msg.content],
@@ -201,7 +210,110 @@ export default defineBackground(() => {
         })();
         return true;
 
+      case 'generateIgnoreFileFromPlan':
+        (async () => {
+          const LOG_PREFIX = '[IgnoreGen]';
+          try {
+            console.log(`${LOG_PREFIX} Received request to generate .ignore file for tab ${tabId}.`);
+            const { plan, fileList } = msg;
+
+            if (!plan || !fileList || !tabId) {
+              throw new Error(`Missing required parameters: plan=${!!plan}, fileList=${!!fileList}, tabId=${!!tabId}`);
+            }
+
+            console.log(`${LOG_PREFIX} Plan content:\n`, plan);
+            console.log(`${LOG_PREFIX} File list:\n`, fileList.join('\n'));
+
+            // 1. Get LLM settings from storage
+            const [provider, googleKey, googleModel, openaiKey, openaiModel] = await Promise.all([
+              storage.getItem<string>('local:selectedProvider'),
+              storage.getItem<string>('local:googleApiKey'),
+              storage.getItem<string>('local:googleModel'),
+              storage.getItem<string>('local:openaiApiKey'),
+              storage.getItem<string>('local:openaiModel'),
+            ]);
+            console.log(`${LOG_PREFIX} Using provider: ${provider || 'google'}`);
+
+            let llm;
+            let modelName;
+            if (provider === 'openai' && openaiKey) {
+              llm = createOpenAI({ apiKey: openaiKey });
+              modelName = openaiModel || 'gpt-4o-mini';
+            } else if (provider === 'google' && googleKey) {
+              llm = createGoogleGenerativeAI({ apiKey: googleKey });
+              modelName = googleModel || 'gemini-1.5-flash-latest';
+            } else {
+              throw new Error("AI provider API key not configured. Please set it in the extension options.");
+            }
+             console.log(`${LOG_PREFIX} Using model: ${modelName}`);
+
+            // 2. Construct prompt
+            const systemPrompt = "You are an expert programmer's assistant. Your task is to analyze an AI-generated plan and a project's file list, and then create the content for an `.ignore` file. This `.ignore` file acts as a WHITELIST. It should ignore everything by default (`*`) and then un-ignore (`!`) only the specific files and folders necessary to execute the plan. Be precise. Only include files mentioned or clearly implied by the plan. Do not include files that are not relevant to the task. The final output must be ONLY the raw text content for the file, without any explanation or markdown code block fences like ```.";
+            const userPrompt = `
+Here is the project's complete file list:
+\`\`\`
+${fileList.join('\n')}
+\`\`\`
+
+Here is the plan I want to execute:
+---
+${plan}
+---
+
+Generate the content for the .bolt/ignore file now.
+`;
+            console.log(`${LOG_PREFIX} Sending prompt to ${modelName}.`);
+
+            // 3. Call LLM
+            const { text: resultText } = await generateText({
+              model: llm(modelName),
+              system: systemPrompt,
+              prompt: userPrompt,
+            });
+
+            console.log(`${LOG_PREFIX} Raw response from LLM:\n---\n${resultText}\n---`);
+            
+            // 4. Parse response (basic cleaning)
+            let ignoreContent = resultText.trim();
+            const codeBlockRegex = /```(?:\w+\n)?([\s\S]+?)```/;
+            const match = ignoreContent.match(codeBlockRegex);
+            if (match) {
+              console.log(`${LOG_PREFIX} Found markdown code block, extracting content.`);
+              ignoreContent = match[1].trim();
+            }
+            console.log(`${LOG_PREFIX} Parsed .ignore content to be written:\n---\n${ignoreContent}\n---`);
+
+            if (!ignoreContent) {
+              throw new Error("LLM returned empty content.");
+            }
+
+            // 5. Write file by injecting script
+            console.log(`${LOG_PREFIX} Injecting script to write file to tab ${tabId}.`);
+            const [injectionResult] = await browser.scripting.executeScript({
+              target: { tabId: tabId },
+              world: 'MAIN',
+              func: createOrUpdateIgnoreFile,
+              args: [ignoreContent],
+            });
+            
+            console.log(`${LOG_PREFIX} File write operation result:`, injectionResult.result);
+            if (!injectionResult.result?.ok) {
+              throw new Error(injectionResult.result?.error || 'File write injection failed.');
+            }
+
+            sendResponse({ ok: true, result: injectionResult.result });
+
+          } catch (e) {
+            const errorMsg = e instanceof Error ? e.message : String(e);
+            console.error(`${LOG_PREFIX} Error during operation:`, e);
+            sendResponse({ ok: false, error: errorMsg });
+          }
+        })();
+        return true;
+
       default:
+        // For commands that don't need a tabId or are from a different context (like popup)
+        console.warn(`[Background] Received command '${msg.cmd}' which is not handled.`);
         return false;
     }
   });

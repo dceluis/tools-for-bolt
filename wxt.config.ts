@@ -8,7 +8,7 @@ export default defineConfig({
   outDirTemplate: "{{browser}}-mv{{manifestVersion}}{{modeSuffix}}",
   manifest: {
     // Add 'scripting' to your permissions array
-    permissions: ['tabs', 'activeTab', 'scripting'],
+    permissions: ['tabs', 'activeTab', 'scripting', 'storage'],
     host_permissions: ['<all_urls>'],
   },
 })
