@@ -2,6 +2,7 @@
 declare global {
   interface Window {
     planDetectorInitialized?: boolean;
+    assistantToolbarInjected?: boolean;
   }
 }
 
@@ -151,6 +152,18 @@ export default defineContentScript({
 
     const notificationManager = new NotificationManager();
 
+    /* --------------------------------------------------------------- *
+     *  Tiny helper so every inner closure can fire a toast quickly.   *
+     * --------------------------------------------------------------- */
+    const notify = (
+      message: string,
+      type: 'success' | 'info' | 'error' = 'info',
+      duration = 5_000,
+    ) => {
+      console.log('[Notify]', { message, type });
+      notificationManager.show({ message, type, duration });
+    };
+
     // Listen for requests to show notifications from the background script
     browser.runtime.onMessage.addListener((message) => {
       // LOG: Message received in content script
@@ -228,6 +241,63 @@ export default defineContentScript({
         
         console.log(`${LOG_PREFIX_TREE} Successfully parsed file list:`, fileList);
         return fileList;
+    }
+
+    /**
+     * Finds a file element in the file tree by its full path.
+     * @param fullPath The full path of the file (e.g., '/home/project/.bolt/ignore').
+     * @returns The HTMLElement of the file, or null if not found.
+     */
+    function findFileElementInTree(fullPath: string): HTMLElement | null {
+      console.log(`${LOG_PREFIX_TREE} Searching for file: ${fullPath}`);
+      const fileTreeContainer = document.querySelector(EDITOR_PANEL_SELECTOR)?.closest('.flex.flex-col');
+      if (!fileTreeContainer) {
+          console.warn(`${LOG_PREFIX_TREE} File tree container not found.`);
+          return null;
+      }
+
+      // Normalize path for comparison (remove leading /home/project)
+      const normalizedPath = fullPath.startsWith('/home/project') ? fullPath.substring('/home/project'.length) : fullPath;
+      const pathSegments = normalizedPath.split('/').filter(s => s.length > 0);
+
+      if (pathSegments.length === 0) {
+        console.warn(`${LOG_PREFIX_TREE} Invalid or empty path provided.`);
+        return null;
+      }
+
+      const domNodes = fileTreeContainer.querySelectorAll<HTMLElement>(NODE_SELECTOR);
+      let currentPath = '';
+      const pathStack: string[] = ['']; // root is empty string representing /home/project
+
+      for (const node of Array.from(domNodes)) {
+        const nameElement = node.querySelector<HTMLElement>(FILE_NAME_SELECTOR);
+        if (!nameElement) continue;
+
+        const name = nameElement.textContent?.trim() || 'unknown';
+        const padding = parseInt(node.style.paddingLeft || '0', 10);
+        const depth = Math.round((padding - NODE_BASE_PADDING) / NODE_DEPTH_PADDING) + 1; // 1-based
+
+        while (depth < pathStack.length) {
+            pathStack.pop();
+        }
+        
+        const parentPath = pathStack[pathStack.length - 1];
+        currentPath = `${parentPath}/${name}`;
+
+        // Check if this node matches the target file
+        if (currentPath === normalizedPath) {
+          console.log(`${LOG_PREFIX_TREE} Found element for ${fullPath}.`);
+          return node;
+        }
+
+        const isFolder = !!node.querySelector(FOLDER_ICON_SELECTOR);
+        if (isFolder) {
+            pathStack.push(currentPath);
+        }
+      }
+
+      console.log(`${LOG_PREFIX_TREE} File ${fullPath} not found in the tree.`);
+      return null;
     }
 
 
@@ -392,5 +462,187 @@ export default defineContentScript({
       console.log(`${LOG_PREFIX} Extension state changed to: ${isEnabled ? 'Enabled' : 'Disabled'}`);
       isEnabled !== false ? startDetector() : stopDetector();
     });
+
+    // --- Mini Toolbar Injection ---
+    // This is a simple toolbar to provide quick access to .bolt/ignore and token count.
+    // It's injected into the Bolt Workbench header.
+    if (!window.assistantToolbarInjected) {
+      window.assistantToolbarInjected = true;
+      console.log('[MiniToolbar] Flag set – starting injection routine.');
+      injectMiniToolbar();
+    }
+
+    function injectMiniToolbar() {
+      /* bolt panel header that holds “Code | Preview” pills */
+      const headerSel = '.z-workbench .flex.items-center.px-3.py-2.border-b';
+      console.log('[MiniToolbar] Looking for workbench header selector:', headerSel);
+
+      const waitHeader = setInterval(() => {
+        const header = document.querySelector<HTMLElement>(headerSel);
+        if (!header) {
+          /* Emit a ping every ~2 s (non-spamming) so we know we’re alive */
+          if (!(window as any)._miniToolbarWaiting) {
+            console.log('[MiniToolbar] Header not yet found – still awaiting DOM...');
+            (window as any)._miniToolbarWaiting = true;
+            setTimeout(() => delete (window as any)._miniToolbarWaiting, 2000);
+          }
+          return;
+        }
+        clearInterval(waitHeader);
+        console.log('[MiniToolbar] Header found! Inserting toolbar.');
+
+        /* -------- styles (green-tinted pills) -------------------------- */
+        const style = document.createElement('style');
+        style.textContent = `
+          .bolt-mini-toolbar          { display:flex; gap:.5rem; margin-left:auto; }
+          .bolt-mini-toolbar button   {
+            display:inline-flex; align-items:center; justify-content:center;
+            width:2rem; height:2rem; border-radius:9999px;
+            background:#14532d; color:#d1fae5;
+            transition:background .15s, transform .15s;
+          }
+          .bolt-mini-toolbar button:hover    { background:#166534; transform:scale(1.08); }
+          .bolt-mini-toolbar button:disabled { opacity:.5; cursor:not-allowed; }
+          .bolt-mini-toolbar .badge {
+            display:inline-flex; align-items:center; justify-content:center;
+            min-width:1.6rem; height:1.6rem; padding:0 .25rem;
+            background:#064e3b; color:#a7f3d0; font-size:.7rem; font-weight:700;
+            border-radius:9999px;
+          }
+          .bolt-mini-toolbar button svg { width:1.25rem; height:1.25rem; stroke-width:2; }
+          @keyframes spin { to { transform: rotate(360deg); } }
+          .spin { animation: spin 1s linear infinite; }
+        `;
+        document.head.appendChild(style);
+
+        /* --- inline SVG icons (no external fonts) -------------------- */
+        const ICON_FILE = `
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline stroke-linecap="round" stroke-linejoin="round" points="14 2 14 8 20 8"/>
+          </svg>`;
+
+        const ICON_RESET   = `
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <polyline stroke-linecap="round" stroke-linejoin="round" points="1 4 1 10 7 10"/>
+            <path   stroke-linecap="round" stroke-linejoin="round" d="M3.51 15a9 9 0 1 0 .49-5"/>
+          </svg>`;
+
+        const ICON_SPIN    = `
+          <svg class="spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 2v4m0 12v4m8-8h-4M8 12H4m11.31-6.31l-2.83 2.83m0 5.66l2.83 2.83m-8.48-8.48l-2.83-2.83m0 8.48l2.83-2.83"/>
+          </svg>`;
+
+        const ICON_CHECK   = `
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+          </svg>`;
+
+        const ICON_CROSS   = `
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <line  x1="18" y1="6" x2="6"  y2="18" stroke-linecap="round" stroke-linejoin="round"/>
+            <line  x1="6"  y1="6" x2="18" y2="18" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>`;
+
+        /* toolbar root, injected *inside* header and pushed right */
+        const bar = document.createElement('div');
+        bar.className = 'bolt-mini-toolbar';
+        console.log('[MiniToolbar] Toolbar container created.');
+
+        /* ────────────  OPEN .bolt/ignore  ──────────── */
+        const btnOpen = document.createElement('button');
+        btnOpen.innerHTML = ICON_FILE;
+        btnOpen.title = 'Open the .bolt/ignore file';
+        btnOpen.setAttribute('aria-label', 'Open .bolt/ignore');
+
+        btnOpen.onclick = async () => {
+          console.log('[MiniToolbar] "Open Ignore" button clicked.');
+          try {
+            /* 1️⃣  Make sure the “Code” tab is active so the file-tree exists. */
+            const header = document.querySelector<HTMLElement>(headerSel);
+            const codeTab = header
+              ? Array.from(header.querySelectorAll('button')).find((b) =>
+                  b.textContent?.trim().toLowerCase() === 'code',
+                )
+              : null;
+
+            if (codeTab && codeTab.getAttribute('aria-pressed') !== 'true') {
+              console.log('[MiniToolbar] Switching to “Code” tab first.');
+              codeTab.click();
+              await new Promise((r) => setTimeout(r, 300));
+            }
+
+            /* 2️⃣  Locate & open .bolt/ignore inside the file-tree. */
+            const el = findFileElementInTree('/home/project/.bolt/ignore');
+            if (!el) {
+              console.warn('[MiniToolbar] .bolt/ignore not found.');
+              notify('Ignore file not found', 'error');
+              return;
+            }
+            el.click();          // Opening itself is the feedback
+          } catch (e) {
+            notify(`Error: ${(e as Error).message}`, 'error');
+          }
+        };
+        bar.appendChild(btnOpen);
+
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = '0';
+        badge.title = 'Estimated token count for the current editor content (approx. 1 token per 4 chars)';
+        bar.appendChild(badge);
+
+        setInterval(()=>{
+          try{
+            const cmView=(document.querySelector('.cm-content') as any)?.cmView?.view;
+            if(!cmView) return;
+            const len=cmView.state.doc.length;
+            badge.textContent=String(Math.ceil(len/4));  // crude approx.
+            /* emit sparse logs */
+            if(!(window as any)._miniToolbarTokenLog){
+              console.log(`[MiniToolbar] Token estimate updated → ${badge.textContent}`);
+              (window as any)._miniToolbarTokenLog=true;
+              setTimeout(()=>delete (window as any)._miniToolbarTokenLog,5000);
+            }
+          }catch{}
+        },2000);
+
+        /* ────────────  RESET GENERATED SECTION  ──────────── */
+        const btnReset = document.createElement('button');
+        btnReset.innerHTML = ICON_RESET;
+        btnReset.title = 'Remove auto-generated section from .bolt/ignore';
+        btnReset.setAttribute('aria-label', 'Reset .bolt/ignore');
+
+        btnReset.onclick = async () => {
+          console.log('[MiniToolbar] "Reset .bolt/ignore" button clicked.');
+          btnReset.disabled = true;
+          btnReset.innerHTML = ICON_SPIN;
+
+          try {
+            const resp = await browser.runtime.sendMessage({ cmd: 'cleanupIgnoreFile' });
+            if (resp?.ok) {
+              notify('Auto-generated section removed', 'success');
+              btnReset.innerHTML = ICON_CHECK;
+            } else {
+              throw new Error(resp?.error || 'Unknown error');
+            }
+          } catch (e) {
+            console.error('[MiniToolbar] Cleanup error:', e);
+            notify(`Cleanup failed: ${(e as Error).message}`, 'error');
+            btnReset.innerHTML = ICON_CROSS;
+          } finally {
+            setTimeout(() => {
+              btnReset.disabled = false;
+              btnReset.innerHTML = ICON_RESET;
+            }, 1500);
+          }
+        };
+        bar.appendChild(btnReset);
+
+        /* insert in DOM (inside header so it aligns with native pills) */
+        header.appendChild(bar);
+        console.log('[MiniToolbar] Toolbar appended inside header.');
+      },250);
+    }
   },
 });
