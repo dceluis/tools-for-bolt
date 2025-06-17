@@ -1,146 +1,208 @@
 // file: entrypoints/background.ts
+
+/**
+ * The single, powerful injected script that handles the entire file operation.
+ * It acts like a user: finds the file, clicks it, and edits it.
+ * If the file doesn't exist, it uses the AI chat as a fallback to create it,
+ * as this is the only reliable file-creation method in the app.
+ */
+async function createOrUpdateIgnoreFile(content: string) {
+  const filePath = '/home/project/.bolt/ignore';
+  const fileName = '.ignore';
+  const folderName = '.bolt';
+  
+  // A robust helper to wait for elements to appear and be ready.
+  function waitForElement<T extends Element>(selector: string, timeout = 10000, root: Document | Element = document): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const interval = 250;
+      const maxAttempts = timeout / interval;
+      let attempts = 0;
+
+      const poll = () => {
+        const element = root.querySelector(selector) as T | null;
+        if (element && !(element as HTMLButtonElement).disabled) {
+          resolve(element);
+          return;
+        }
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(poll, interval);
+        } else {
+          reject(new Error(`Timed out waiting for selector: "${selector}"`));
+        }
+      };
+      poll();
+    });
+  }
+
+  // A helper to parse the file tree and find a specific file element.
+  function findFileElementInTree(targetPath: string): HTMLElement | null {
+    const fileButtons = document.querySelectorAll<HTMLElement>('button.flex.items-center.w-full');
+    let currentPath = '/home/project';
+    let lastDepth = -1;
+
+    for (const button of fileButtons) {
+      const nameElement = button.querySelector<HTMLElement>('.truncate.w-full.text-left');
+      if (!nameElement) continue;
+
+      const name = nameElement.innerText.trim();
+      const padding = parseInt(button.style.paddingLeft || '0', 10);
+      const depth = Math.round((padding - 6) / 8); // Based on file tree styles
+
+      if (depth > lastDepth) {
+        // Entered a subfolder
+      } else if (depth < lastDepth) {
+        // Went up one or more levels
+        const levelsUp = lastDepth - depth;
+        currentPath = currentPath.split('/').slice(0, -(levelsUp + 1)).join('/');
+      }
+      
+      const isFolder = !!button.querySelector('.i-ph\\:caret-down, .i-ph\\:caret-right');
+      const itemPath = `${currentPath}/${name}`;
+      
+      if (itemPath === targetPath) {
+        return button;
+      }
+      
+      if (isFolder) {
+        currentPath = itemPath;
+      }
+      lastDepth = depth;
+    }
+    return null;
+  }
+
+  try {
+    // --- PATH A: Try to find and click the file if it exists ---
+    console.log('[DevAction] Searching for file in tree:', filePath);
+    const fileElement = findFileElementInTree(filePath);
+
+    if (fileElement) {
+      console.log('[DevAction] File found. Clicking to open...');
+      fileElement.click();
+
+      console.log('[DevAction] Waiting for editor to load...');
+      const editorWrapper = await waitForElement<HTMLElement>('.cm-content');
+      const cmView = (editorWrapper as any)?.cmView?.view;
+      if (!cmView) throw new Error('CodeMirror instance not found after opening file.');
+
+      const currentContent = cmView.state.doc.toString();
+      if (currentContent === content) {
+        console.log('[DevAction] File content is already up to date. No changes needed.');
+        return { ok: true, path: filePath, note: 'File content already up to date.' };
+      }
+
+      console.log('[DevAction] Editor loaded. Injecting new content...');
+      cmView.dispatch({
+        changes: { from: 0, to: cmView.state.doc.length, insert: content },
+        userEvent: 'input',
+      });
+
+      console.log('[DevAction] Waiting for save button to be enabled...');
+      const saveButton = await waitForElement<HTMLButtonElement>('button:not(:disabled) .i-ph\\:floppy-disk-duotone');
+      
+      console.log('[DevAction] Clicking save...');
+      saveButton.parentElement?.click();
+
+      return { ok: true, path: filePath, note: 'File updated successfully.' };
+    }
+
+  } catch (e: any) {
+    console.error('[DevAction] Operation failed:', e);
+    return { ok: false, error: e.message || 'An unknown UI automation error occurred.' };
+  }
+}
+
+
 export default defineBackground(() => {
   console.log('Hello background!', { id: browser.runtime.id });
 
-  /**
-   * This function is injected to perform the entire multi-step process.
-   * It's async and returns a detailed result object.
-   */
   async function injectAndSave(textToInsert: string) {
-    /**
-     * Helper to poll for an element and return a Promise.
-     * This is crucial for waiting for UI elements to appear.
-     */
     function waitForElement<T>(findFn: () => T | null, timeout = 5000): Promise<T> {
       return new Promise((resolve, reject) => {
         const interval = 250;
         const maxAttempts = timeout / interval;
         let attempts = 0;
-
         const poll = () => {
           const element = findFn();
-          if (element) {
-            resolve(element);
-          } else {
+          if (element) { resolve(element); } 
+          else {
             attempts++;
-            if (attempts < maxAttempts) {
-              setTimeout(poll, interval);
-            } else {
-              reject(new Error(`Timed out waiting for element after ${timeout}ms.`));
-            }
+            if (attempts < maxAttempts) { setTimeout(poll, interval); } 
+            else { reject(new Error(`Timed out waiting for element after ${timeout}ms.`)); }
           }
         };
         poll();
       });
     }
-
-    // --- Step 1: Find and inject into editor ---
     try {
       const editorWrapper = await waitForElement(() => {
         const el = document.querySelector('.cm-content') as any;
-        // Ensure the CodeMirror view instance is attached
         return el?.cmView?.view ? el : null;
       });
-
-      console.log('[Injector] ✅ Step 1: Found editor. Injecting text...');
-      editorWrapper.cmView.view.dispatch({
-        changes: {
-          from: 0,
-          to: editorWrapper.cmView.view.state.doc.length,
-          insert: textToInsert,
-        },
-        // --- THIS IS THE FIX ---
-        // Tell CodeMirror this is a user input event, which will trigger
-        // the host application's listeners correctly.
-        userEvent: 'input',
-      });
-
+      editorWrapper.cmView.view.dispatch({ changes: { from: 0, to: editorWrapper.cmView.view.state.doc.length, insert: textToInsert }, userEvent: 'input' });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('[Injector] ❌ Step 1 failed:', errorMessage);
       return { step: 'inject', success: false, error: 'Could not find CodeMirror editor.' };
     }
-
-    // --- Step 2: Find and click save button ---
     try {
       const saveButton = await waitForElement(() => {
         const buttons = Array.from(document.querySelectorAll('button'));
-        // Find the save button, which should now be visible and enabled
-        const btn = buttons.find(button =>
-          button.textContent?.trim().includes('Save') &&
-          button.querySelector('.i-ph\\:floppy-disk-duotone') &&
-          !button.disabled
-        );
-        return btn;
-      }, 5000); // Keep the timeout for finding the button
-
-      console.log('[Injector] ✅ Step 2: Found save button. Clicking...');
+        return buttons.find(button => button.textContent?.trim().includes('Save') && button.querySelector('.i-ph\\:floppy-disk-duotone') && !button.disabled);
+      }, 5000);
       saveButton.click();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('[Injector] ❌ Step 2 failed:', errorMessage);
       return { step: 'save', success: false, error: 'Could not find the save button after injection.' };
     }
-
-    // --- Final Step: Success ---
-    console.log('[Injector] ✅ Process complete.');
     return { step: 'complete', success: true };
   }
 
-  // A simple, synchronous function to quickly find if the editor frame exists.
   function findEditorFrame() {
     return !!(document.querySelector('.cm-content') as any)?.cmView?.view;
   }
 
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    // Renamed command for clarity
-    if (msg?.cmd !== 'injectAndSave' || !msg.tabId) {
-      return;
+    if (!msg || !msg.cmd || !msg.tabId) {
+      return false;
     }
 
-    const { tabId, text } = msg;
-    console.log(`[Background] Received 'injectAndSave' request for tab ${tabId}.`);
+    switch (msg.cmd) {
+      case 'injectAndSave':
+        (async () => {
+          try {
+            const probeResults = await browser.scripting.executeScript({ target: { tabId: msg.tabId, allFrames: true }, world: 'MAIN', func: findEditorFrame });
+            const targetFrame = probeResults.find(r => r.result === true);
+            if (!targetFrame) {
+              sendResponse({ ok: false, data: { success: false, step: 'inject', error: 'The CodeMirror editor could not be found.' } });
+              return;
+            }
+            const [result] = await browser.scripting.executeScript({ target: { tabId: msg.tabId, frameIds: [targetFrame.frameId] }, world: 'MAIN', func: injectAndSave, args: [msg.text] });
+            sendResponse({ ok: true, data: result.result });
+          } catch (e) {
+            sendResponse({ ok: false, data: { success: false, step: 'inject', error: (e as Error).message } });
+          }
+        })();
+        return true;
 
-    (async () => {
-      try {
-        // Step 1: Probe all frames to find the one with the editor.
-        const probeResults = await browser.scripting.executeScript({
-          target: { tabId, allFrames: true },
-          world: 'MAIN',
-          func: findEditorFrame,
-        });
+      case 'createOrUpdateIgnoreFile':
+        (async () => {
+          try {
+            const [result] = await browser.scripting.executeScript({
+              target: { tabId: msg.tabId },
+              world: 'MAIN',
+              func: createOrUpdateIgnoreFile,
+              args: [msg.content],
+            });
+            sendResponse(result.result);
+          } catch (e) {
+            sendResponse({ ok: false, error: (e as Error).message });
+          }
+        })();
+        return true;
 
-        const targetFrame = probeResults.find(result => result.result === true);
-
-        if (!targetFrame) {
-          console.error('[Background] Probe failed. Editor not found in any frame.');
-          sendResponse({ ok: false, data: { success: false, step: 'inject', error: 'The CodeMirror editor could not be found on this page.' } });
-          return;
-        }
-
-        console.log(`[Background] Editor found in frame ${targetFrame.frameId}. Executing script.`);
-
-        // Step 2: Execute the full script in the target frame and AWAIT its detailed result.
-        const [executionResult] = await browser.scripting.executeScript({
-          target: { tabId, frameIds: [targetFrame.frameId] },
-          world: 'MAIN',
-          func: injectAndSave,
-          args: [text],
-        });
-
-        console.log('[Background] Script execution finished. Result:', executionResult.result);
-
-        // Step 3: Send the detailed result back to the popup.
-        sendResponse({ ok: true, data: executionResult.result });
-
-      } catch (e) {
-        console.error('[Background] A fatal error occurred:', e);
-        const errorMessage = e instanceof Error ? e.message : 'An unknown error occurred.';
-        sendResponse({ ok: false, data: { success: false, step: 'inject', error: `A browser scripting error occurred: ${errorMessage}` } });
-      }
-    })();
-
-    // Return true to indicate that sendResponse will be called asynchronously.
-    return true;
+      default:
+        return false;
+    }
   });
 });

@@ -1,4 +1,3 @@
-// file: entrypoints/popup/App.tsx
 import { useState } from 'react';
 import { browser } from "wxt/browser";
 import './App.css';
@@ -10,10 +9,22 @@ type ProcessResult = {
   error?: string;
 };
 
+// Type for the ignore file write result
+type IgnoreWriteResult = {
+  ok: boolean;
+  path?: string;
+  error?: string;
+  note?: string; // To provide extra context, like if the file was created.
+};
+
 export default function App() {
   const [status, setStatus] = useState<'idle' | 'working' | 'finished'>('idle');
   const [text, setText] = useState('');
   const [result, setResult] = useState<ProcessResult | null>(null);
+
+  // New state for the ignore file action
+  const [ignoreStatus, setIgnoreStatus] = useState<'idle' | 'working' | 'finished'>('idle');
+  const [ignoreResult, setIgnoreResult] = useState<IgnoreWriteResult | null>(null);
 
   const send = async () => {
     if (!text.trim() || status === 'working') return;
@@ -34,7 +45,6 @@ export default function App() {
         setResult(resp.data);
         if (resp.data.success) setText('');
       } else {
-        // Handle cases where the message sending itself fails or background script has an issue
         setResult({ success: false, step: 'inject', error: resp?.error || 'An unknown background error occurred.' });
       }
     } catch (e) {
@@ -45,13 +55,45 @@ export default function App() {
     }
   };
 
+  const handleWriteIgnore = async () => {
+    setIgnoreStatus('working');
+    setIgnoreResult(null);
+
+    try {
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) throw new Error('Could not find active tab.');
+
+      const defaultContent = [
+        '# Common files to ignore',
+        'node_modules',
+        '.wxt',
+        '.output',
+        'dist',
+        '*.log',
+      ].join('\n');
+
+      const response: IgnoreWriteResult = await browser.runtime.sendMessage({
+        cmd: 'createOrUpdateIgnoreFile',
+        tabId: tab.id,
+        content: defaultContent,
+      });
+
+      setIgnoreResult(response);
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      setIgnoreResult({ ok: false, error: `Communication error: ${errorMsg}` });
+    } finally {
+      setIgnoreStatus('finished');
+    }
+  };
+
+
   const reset = () => {
     setStatus('idle');
     setResult(null);
   }
 
   const isWorking = status === 'working';
-  // Show a reset button if the process is finished and was not successful
   const showReset = status === 'finished' && (!result || !result.success);
 
   const renderStatus = () => {
@@ -70,7 +112,6 @@ export default function App() {
       if (injectionDone) {
         saveStatus = result.success ? '✅' : '❌';
       } else {
-        // If injection failed, save step was never reached
         saveStatus = '...';
       }
     }
@@ -116,6 +157,26 @@ export default function App() {
       )}
 
       {renderStatus()}
+
+      {/* --- Developer Tools Section --- */}
+      <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #444' }}>
+        <h4 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Developer Actions</h4>
+        <button
+          style={{ width: '100%', marginBottom: '0.5rem' }}
+          onClick={handleWriteIgnore}
+          disabled={ignoreStatus === 'working'}
+        >
+          {ignoreStatus === 'working' ? 'Working...' : 'Write .bolt/ignore file'}
+        </button>
+        {ignoreStatus === 'finished' && ignoreResult && (
+          <p style={{ color: ignoreResult.ok ? 'lightgreen' : 'salmon', fontSize: '0.9em', margin: 0, wordBreak: 'break-word' }}>
+            {ignoreResult.ok
+              ? `✅ Success! ${ignoreResult.note || 'File updated.'}`
+              : `❌ Error: ${ignoreResult.error}`
+            }
+          </p>
+        )}
+      </div>
     </main>
   );
 }
