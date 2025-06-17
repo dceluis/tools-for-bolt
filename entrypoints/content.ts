@@ -83,7 +83,7 @@ class NotificationManager {
     message: string;
     type?: 'success' | 'info' | 'error';
     duration?: number;
-    action?: { text: string };
+    action?: { text: string; callback?: () => void };
   }) {
     // LOG: Show method called
     console.log(`[NotificationManager] show() called with:`, { message, type, duration, action });
@@ -103,6 +103,7 @@ class NotificationManager {
       actionButton.onclick = (e) => {
         e.stopPropagation();
         console.log(`[NotificationManager] Action button "${action.text}" clicked.`);
+        action.callback?.();          // invoke the caller-supplied handler
         this.hide(notificationEl);
       };
       notificationEl.appendChild(actionButton);
@@ -296,7 +297,26 @@ export default defineContentScript({
         } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             console.error(`${LOG_PREFIX_ACTION} ❌ FAILED:`, errorMsg);
-            alert(`Custom Action Failed:\n${errorMsg}`);
+
+            /* If the failure is due to a missing API key, guide the user
+               with an info notification that can open the settings page. */
+            if (/api key.*not configured/i.test(errorMsg)) {
+              notificationManager.show({
+                message: 'AI provider API key is not set. Open the extension settings to add it.',
+                type: 'info',
+                duration: 10000,
+                action: {
+                  text: 'Open Settings',
+                  callback: () => {
+                    // Ask the background script to open the options page
+                    browser.runtime.sendMessage({ cmd: 'openOptions' });
+                  },
+                },
+              });
+            } else {
+              alert(`Custom Action Failed:\n${errorMsg}`);
+            }
+
             newIcon.className = 'text-lg i-ph:x-circle-fill text-red-500';
             buttonTextNode.nodeValue = ' Failed';
 

@@ -383,6 +383,17 @@ Generate the content for the .bolt/ignore file now.
         })();
         return true; // Keep message channel open for async response.
 
+      /* ─── OPEN OPTIONS POP-UP ────────────────────────────────────────────── */
+      case 'openOptions': {
+        /*  Allows content-script UI elements (e.g. notifications)
+            to pop the options page so the user can enter their API key. */
+        browser.runtime
+          .openOptionsPage()
+          .then(() => sendResponse({ ok: true }))
+          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }));
+        return true;          // keep the message channel alive for async response
+      }
+
       default:
         console.warn(`[Background] Received unhandled command '${msg.cmd}'.`);
         return false;
