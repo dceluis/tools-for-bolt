@@ -2,9 +2,13 @@ import { defineConfig } from 'wxt';
 
 // See https://wxt.dev/api/config.html
 export default defineConfig({
-  modules: ['@wxt-dev/module-react'],
   runner: {
     startUrls: ["https://bolt.new/"]
   },
-  outDirTemplate: "{{browser}}-mv{{manifestVersion}}{{modeSuffix}}"
-}) 
+  outDirTemplate: "{{browser}}-mv{{manifestVersion}}{{modeSuffix}}",
+  manifest: {
+    // Add 'scripting' to your permissions array
+    permissions: ['tabs', 'activeTab', 'scripting'],
+    host_permissions: ['<all_urls>'],
+  },
+})
