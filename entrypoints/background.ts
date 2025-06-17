@@ -127,7 +127,7 @@ async function createOrUpdateIgnoreFile(content: string) {
 
 
 export default defineBackground(() => {
-  console.log('Hello background!', { id: browser.runtime.id });
+  console.log('[Background] Service worker started.');
 
   async function injectAndSave(textToInsert: string) {
     function waitForElement<T>(findFn: () => T | null, timeout = 5000): Promise<T> {
@@ -175,60 +175,72 @@ export default defineBackground(() => {
   }
 
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    // ** THE FIX IS HERE **
-    // Get the tabId from the message if provided (from popup), otherwise from the sender (from content script).
-    const tabId = msg.tabId || sender.tab?.id;
+    // Determine the sender for logging purposes.
+    const senderCtx = sender.tab ? `tab ${sender.tab.id}` : 'popup or other context';
+    console.log(`[Background] Received command '${msg.cmd}' from ${senderCtx}.`);
 
     if (!msg || !msg.cmd) {
-      return false; // Ignore invalid messages
+      console.warn('[Background] Ignoring invalid message:', msg);
+      return false;
     }
 
     switch (msg.cmd) {
       case 'injectAndSave':
         (async () => {
-          if (!tabId) { sendResponse({ ok: false, error: "Could not identify sender tab."}); return; }
+          /* ── 1️⃣  Resolve target tab (popup → no sender.tab) ───────────────── */
+          let tabId: number | undefined = sender.tab?.id ?? msg.tabId;
+          if (!tabId) {
+            const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+            tabId = activeTab?.id;
+          }
+
+          if (!tabId) {
+            sendResponse({ ok: false, error: 'Could not identify target tab.' });
+            return;
+          }
+
           try {
-            const probeResults = await browser.scripting.executeScript({ target: { tabId: tabId, allFrames: true }, world: 'MAIN', func: findEditorFrame });
+            const probeResults = await browser.scripting.executeScript({ target: { tabId, allFrames: true }, world: 'MAIN', func: findEditorFrame });
             const targetFrame = probeResults.find(r => r.result === true);
             if (!targetFrame) {
               sendResponse({ ok: false, data: { success: false, step: 'inject', error: 'The CodeMirror editor could not be found.' } });
               return;
             }
-            const [result] = await browser.scripting.executeScript({ target: { tabId: tabId, frameIds: [targetFrame.frameId] }, world: 'MAIN', func: injectAndSave, args: [msg.text] });
+            const [result] = await browser.scripting.executeScript({ target: { tabId, frameIds: [targetFrame.frameId] }, world: 'MAIN', func: injectAndSave, args: [msg.text] });
             sendResponse({ ok: true, data: result.result });
           } catch (e) {
             sendResponse({ ok: false, data: { success: false, step: 'inject', error: (e as Error).message } });
           }
         })();
-        return true;
+        return true; // Keep the message channel open for the async response.
 
       case 'createOrUpdateIgnoreFile':
-        (async () => {
-          if (!tabId) { sendResponse({ ok: false, error: "Could not identify sender tab."}); return; }
-          try {
-            const [result] = await browser.scripting.executeScript({
-              target: { tabId: tabId },
-              world: 'MAIN',
-              func: createOrUpdateIgnoreFile,
-              args: [msg.content],
-            });
-            sendResponse(result.result);
-          } catch (e) {
-            sendResponse({ ok: false, error: (e as Error).message });
-          }
-        })();
-        return true;
-
       case 'cleanupIgnoreFile':
         (async () => {
-          if (!tabId) { sendResponse({ ok: false, error: "Could not identify sender tab."}); return; }
           try {
+            // 1️⃣  Determine the correct target tab (popup calls have no sender.tab).
+            let tabId: number | undefined = sender.tab?.id ?? msg.tabId;
+            if (!tabId) {
+              const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+              tabId = activeTab?.id;
+            }
+
+            if (!tabId) {
+              sendResponse({ ok: false, error: 'Could not identify target tab.' });
+              return;
+            }
+
+            // 2️⃣  Decide whether we’re writing or cleaning up.
+            const content = msg.cmd === 'cleanupIgnoreFile' ? '*' : msg.content;
+
+            // 3️⃣  Run the script in the page context.
             const [result] = await browser.scripting.executeScript({
-              target: { tabId: tabId },
+              target: { tabId },
               world: 'MAIN',
               func: createOrUpdateIgnoreFile,
-              args: ['*'], // '*' is the content for cleaning up (ignore everything)
+              args: [content],
             });
+
             sendResponse(result.result);
           } catch (e) {
             sendResponse({ ok: false, error: (e as Error).message });
@@ -239,6 +251,7 @@ export default defineBackground(() => {
       case 'generateIgnoreFileFromPlan':
         (async () => {
           const LOG_PREFIX = '[IgnoreGen]';
+          const tabId = sender.tab?.id; // Ensure tabId is available for this case too
           try {
             console.log(`${LOG_PREFIX} Received request to generate .ignore file for tab ${tabId}.`);
             const { plan, fileList } = msg;
@@ -337,9 +350,41 @@ Generate the content for the .bolt/ignore file now.
         })();
         return true;
 
+      case 'showTestNotification':
+        (async () => {
+          console.log(`[Background] Handling 'showTestNotification'.`);
+          try {
+            // FIX: When a message comes from a popup, sender.tab is undefined.
+            // We must explicitly query for the active tab to find the recipient.
+            const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+            if (!activeTab?.id) {
+              throw new Error("Could not find an active tab to send the notification to.");
+            }
+            const tabId = activeTab.id;
+            
+            console.log(`[Background] Found active tab ${tabId}. Sending 'showNotification' to its content script.`);
+            
+            await browser.tabs.sendMessage(tabId, {
+              cmd: 'showNotification',
+              options: {
+                message: 'This is a test notification from the background script.',
+                type: 'success',
+                duration: 5000,
+              }
+            });
+            
+            console.log(`[Background] Successfully sent 'showNotification' to tab ${tabId}.`);
+            sendResponse({ ok: true });
+          } catch (e) {
+            const errorMsg = e instanceof Error ? e.message : String(e);
+            console.error(`[Background] Failed to send notification:`, e);
+            sendResponse({ ok: false, error: `Could not send notification. Details: ${errorMsg}` });
+          }
+        })();
+        return true; // Keep message channel open for async response.
+
       default:
-        // For commands that don't need a tabId or are from a different context (like popup)
-        console.warn(`[Background] Received command '${msg.cmd}' which is not handled.`);
+        console.warn(`[Background] Received unhandled command '${msg.cmd}'.`);
         return false;
     }
   });

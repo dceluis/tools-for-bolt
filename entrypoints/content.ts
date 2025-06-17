@@ -5,12 +5,162 @@ declare global {
   }
 }
 
+// --- Notification System ---
+class NotificationManager {
+  private container: HTMLElement;
+  private shadowRoot: ShadowRoot;
+
+  constructor() {
+    this.container = document.createElement('div');
+    this.container.id = 'bolt-assistant-notifications';
+    document.body.appendChild(this.container);
+    
+    this.shadowRoot = this.container.attachShadow({ mode: 'open' });
+    this.injectStyles();
+    // LOG: Confirming instantiation
+    console.log('[NotificationManager] Initialized and attached to body.');
+  }
+
+  private injectStyles() {
+    const style = document.createElement('style');
+    style.textContent = `
+      :host {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+      }
+      .notification {
+        display: flex;
+        align-items: center;
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: #fff;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        opacity: 0;
+        transform: translateX(100%);
+        transition: opacity 0.3s ease, transform 0.3s ease;
+        min-width: 280px;
+        max-width: 350px;
+      }
+      .notification.show {
+        opacity: 1;
+        transform: translateX(0);
+      }
+      .notification.hide {
+        opacity: 0;
+        transform: translateX(100%);
+      }
+      .notification-content {
+        flex-grow: 1;
+      }
+      .notification--info { background-color: #0284c7; }
+      .notification--success { background-color: #16a34a; }
+      .notification--error { background-color: #dc2626; }
+      .notification-action {
+        margin-left: 12px;
+        padding: 4px 8px;
+        border: 1px solid #fff;
+        background: transparent;
+        color: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: background-color 0.2s;
+      }
+      .notification-action:hover {
+        background-color: rgba(255, 255, 255, 0.2);
+      }
+    `;
+    this.shadowRoot.appendChild(style);
+  }
+
+  public show({ message, type = 'info', duration = 5000, action }: {
+    message: string;
+    type?: 'success' | 'info' | 'error';
+    duration?: number;
+    action?: { text: string };
+  }) {
+    // LOG: Show method called
+    console.log(`[NotificationManager] show() called with:`, { message, type, duration, action });
+    
+    const notificationEl = document.createElement('div');
+    notificationEl.className = `notification notification--${type}`;
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'notification-content';
+    contentEl.textContent = message;
+    notificationEl.appendChild(contentEl);
+
+    if (action) {
+      const actionButton = document.createElement('button');
+      actionButton.className = 'notification-action';
+      actionButton.textContent = action.text;
+      actionButton.onclick = (e) => {
+        e.stopPropagation();
+        console.log(`[NotificationManager] Action button "${action.text}" clicked.`);
+        this.hide(notificationEl);
+      };
+      notificationEl.appendChild(actionButton);
+    }
+    
+    this.shadowRoot.appendChild(notificationEl);
+    console.log('[NotificationManager] Appended notification element to shadow root.');
+    
+    // Animate in
+    requestAnimationFrame(() => {
+        notificationEl.classList.add('show');
+        console.log('[NotificationManager] Applied .show class for entry animation.');
+    });
+
+    if (duration > 0) {
+      setTimeout(() => this.hide(notificationEl), duration);
+    }
+  }
+  
+  private hide(notificationEl: HTMLElement) {
+    // LOG: Hide method called
+    console.log('[NotificationManager] hide() called for element:', notificationEl);
+    notificationEl.classList.remove('show');
+    notificationEl.classList.add('hide');
+    // Remove from DOM after animation
+    notificationEl.addEventListener('transitionend', () => {
+      console.log('[NotificationManager] Animation finished, removing element from DOM.');
+      notificationEl.remove();
+    }, { once: true });
+  }
+}
+
 export default defineContentScript({
   matches: ['<all_urls>'],
 
   main() {
-    if (window.planDetectorInitialized) return;
+    // LOG: Content script main() function executed.
+    console.log('[ContentScript] main() function executed.');
+
+    if (window.planDetectorInitialized) {
+      console.log('[ContentScript] Already initialized, skipping setup.');
+      return;
+    }
     window.planDetectorInitialized = true;
+
+    const notificationManager = new NotificationManager();
+
+    // Listen for requests to show notifications from the background script
+    browser.runtime.onMessage.addListener((message) => {
+      // LOG: Message received in content script
+      console.log('[ContentScript] Received message:', message);
+
+      if (message.cmd === 'showNotification' && message.options) {
+        console.log("[ContentScript] Matched 'showNotification' command. Calling manager.");
+        notificationManager.show(message.options);
+        return true; // Acknowledge the message was handled.
+      }
+    });
 
     const LOG_PREFIX = '[Plan Detector]';
     console.log(`${LOG_PREFIX} Initializing...`);

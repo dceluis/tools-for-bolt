@@ -29,6 +29,11 @@ export default function App() {
   const [ignoreStatus, setIgnoreStatus] = useState<'idle' | 'working' | 'finished'>('idle');
   const [ignoreResult, setIgnoreResult] = useState<IgnoreWriteResult | null>(null);
 
+  // State for the notification action
+  const [notificationStatus, setNotificationStatus] = useState<'idle' | 'working' | 'finished'>('idle');
+  const [notificationResult, setNotificationResult] = useState<{ok: boolean, error?: string} | null>(null);
+
+
   useEffect(() => {
     storage.getItem<boolean>('local:extensionEnabled').then((extensionEnabled) => {
       setIsEnabled(extensionEnabled !== false); // Default to true
@@ -119,6 +124,36 @@ export default function App() {
       setIgnoreResult({ ok: false, error: `Communication error: ${errorMsg}` });
     } finally {
       setIgnoreStatus('finished');
+    }
+  };
+
+  const handleShowNotification = async () => {
+    console.log('[Popup] "Trigger Test Notification" button clicked.');
+    setNotificationStatus('working');
+    setNotificationResult(null);
+
+    try {
+      console.log('[Popup] Sending "showTestNotification" command to background script.');
+      const response = await browser.runtime.sendMessage({
+        cmd: 'showTestNotification',
+      });
+
+      console.log('[Popup] Received response from background:', response);
+
+      if (response && response.ok) {
+        setNotificationResult({ ok: true });
+      } else {
+        // This will now capture errors from the background, like "Could not find active tab"
+        setNotificationResult({ ok: false, error: response?.error || 'An unknown error occurred.' });
+      }
+    } catch(e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      console.error('[Popup] Error sending message:', e);
+      setNotificationResult({ ok: false, error: `Communication error: ${errorMsg}` });
+    } finally {
+      setNotificationStatus('finished');
+      // Hide status message after a few seconds
+      setTimeout(() => setNotificationStatus('idle'), 5000);
     }
   };
 
@@ -221,10 +256,26 @@ export default function App() {
               {ignoreStatus === 'working' ? 'Working...' : 'Write .bolt/ignore file'}
             </button>
             {ignoreStatus === 'finished' && ignoreResult && (
-              <p style={{ color: ignoreResult.ok ? 'lightgreen' : 'salmon', fontSize: '0.9em', margin: 0, wordBreak: 'break-word' }}>
+              <p style={{ color: ignoreResult.ok ? 'lightgreen' : 'salmon', fontSize: '0.9em', margin: 0, wordBreak: 'break-word', marginBottom: '0.75rem' }}>
                 {ignoreResult.ok
                   ? `✅ Success! ${ignoreResult.note || 'File updated.'}`
                   : `❌ Error: ${ignoreResult.error}`
+                }
+              </p>
+            )}
+
+            <button
+              style={{ width: '100%' }}
+              onClick={handleShowNotification}
+              disabled={notificationStatus === 'working'}
+            >
+              {notificationStatus === 'working' ? 'Sending...' : 'Trigger Test Notification'}
+            </button>
+            {notificationStatus === 'finished' && notificationResult && (
+              <p style={{ color: notificationResult.ok ? 'lightgreen' : 'salmon', fontSize: '0.9em', marginTop: '0.5rem', wordBreak: 'break-word', minHeight: '1em' }}>
+                {notificationResult.ok
+                  ? `✅ Notification sent!`
+                  : `❌ Error: ${notificationResult.error || 'Failed to send.'}`
                 }
               </p>
             )}
