@@ -249,9 +249,6 @@ function DevTools() {
 export default function App() {
   const [isEnabled, setIsEnabled] = useState(true);
   const [cleanupStatus, setCleanupStatus] = useState<'idle' | 'working' | 'finished'>('idle');
-  const [status, setStatus] = useState<'idle' | 'working' | 'finished'>('idle');
-  const [text, setText] = useState('');
-  const [result, setResult] = useState<ProcessResult | null>(null);
 
   useEffect(() => {
     storage.getItem<boolean>('local:extensionEnabled').then(e => setIsEnabled(e !== false));
@@ -260,28 +257,6 @@ export default function App() {
   const handleOpenOptions = (e: React.MouseEvent) => {
     e.preventDefault();
     browser.runtime.openOptionsPage();
-  };
-
-  const send = async () => {
-    if (!text.trim() || status === 'working') return;
-    setStatus('working');
-    setResult(null);
-
-    try {
-      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) throw new Error('No active tab');
-      const resp = await browser.runtime.sendMessage({ cmd: 'injectAndSave', text, tabId: tab.id });
-      if (resp.ok && resp.data) {
-        setResult(resp.data);
-        if (resp.data.success) setText('');
-      } else {
-        setResult({ success: false, step: 'inject', error: resp.error || 'Unknown error' });
-      }
-    } catch (e) {
-      setResult({ success: false, step: 'inject', error: (e as Error).message });
-    } finally {
-      setStatus('finished');
-    }
   };
 
   const handleToggleChange = async (newState: boolean) => {
@@ -298,38 +273,6 @@ export default function App() {
         setTimeout(() => setCleanupStatus('idle'), 3000);
       }
     }
-  };
-
-  const isWorking = status === 'working';
-  const showReset = status === 'finished' && (!result || !result.success);
-
-  const renderStatus = () => {
-    if (status === 'idle') return null;
-    let inj = '⏳', sv = '...';
-    if (status === 'working') inj = '⚙️';
-    else if (status === 'finished' && result) {
-      const done = result.step !== 'inject';
-      inj = done || result.success ? '✅' : '❌';
-      sv = done ? (result.success ? '✅' : '❌') : '...';
-    }
-    return (
-      <div style={{ marginTop: '1rem' }}>
-        <p style={{ margin: 0, fontWeight: 'bold' }}>
-          {status === 'working' && 'In Progress...'}
-          {status === 'finished' && result?.success && <span style={{ color: 'lightgreen' }}>All steps complete!</span>}
-          {status === 'finished' && !result?.success && <span style={{ color: 'salmon' }}>Process failed.</span>}
-        </p>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0, textAlign: 'left', fontSize: '0.9em' }}>
-          <li>{inj} 1. Inject text</li>
-          <li>{sv} 2. Click save</li>
-        </ul>
-        {status === 'finished' && !result?.success && result.error && (
-          <p style={{ color: 'salmon', fontSize: '0.9em', marginTop: '0.5rem' }}>
-            <strong>Reason:</strong> {result.error}
-          </p>
-        )}
-      </div>
-    );
   };
 
   return (
@@ -349,28 +292,6 @@ export default function App() {
 
       {isEnabled ? (
         <>
-          <h4 className="section-header">Inject & Save</h4>
-          <textarea
-            rows={5}
-            style={{ width: '100%', boxSizing: 'border-box', marginBottom: '0.5rem' }}
-            placeholder="Type text to inject..."
-            value={text}
-            onChange={e => setText(e.target.value)}
-            disabled={isWorking}
-          />
-
-          {showReset ? (
-            <button style={{ width: '100%' }} onClick={() => setStatus('idle')}>
-              Try Again
-            </button>
-          ) : (
-            <button style={{ width: '100%' }} onClick={send} disabled={isWorking || !text.trim()}>
-              {isWorking ? 'Working...' : 'Run'}
-            </button>
-          )}
-
-          {renderStatus()}
-
           {import.meta.env.DEV && <DevTools />}
         </>
       ) : (

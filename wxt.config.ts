@@ -2,6 +2,7 @@ import { defineConfig } from 'wxt';
 
 // See https://wxt.dev/api/config.html
 export default defineConfig({
+  modules: ['@wxt-dev/auto-icons'],
   manifestVersion: 3,
   runner: {
     startUrls: ["https://bolt.new/"]
