@@ -264,6 +264,68 @@ export default defineBackground(() => {
     }
 
     switch (msg.cmd) {
+      case 'tokenizeAllFiles':
+      (async () => {
+        console.log('[BG] tokenizeAllFiles → received');
+
+        /* 1️⃣  identify target tab */
+        let tabId: number | undefined = sender.tab?.id ?? msg.tabId;
+        if (!tabId) {
+          const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+          tabId = activeTab?.id;
+        }
+        if (!tabId) {
+          sendResponse({ ok:false, error:'Could not identify target tab.' });
+          return;
+        }
+
+        /* 2️⃣  run the **direct-import** strategy inside the page */
+        const [result] = await browser.scripting.executeScript({
+          target: { tabId },
+          world : 'MAIN',
+          func  : () => {
+            return (async () => {
+              try {
+                /* ── locate & import the projects chunk ───────────────── */
+                const link = document.querySelector('link[rel="modulepreload"][href*="projects-"]');
+                if (!link) throw new Error('projects bundle link not found');
+                const href = link.getAttribute('href')!;
+                const url  = new URL(href, location.origin).href;
+                const mod  = await import(/* @vite-ignore */ url);
+
+                /* ── find the store that holds files ─────────────────── */
+                const store = Object.values(mod).find((x:any) => x?.files?.get);
+                if (!store) throw new Error('files store export not detected');
+                const fileMap: Record<string, any> = store.files.get();
+
+                /* ── assemble markdown snapshot ───────────────────────── */
+                const md: string[] = ['# Files\\n'];
+                for (const [path, entry] of Object.entries(fileMap)) {
+                  md.push(
+                    `## File: ${path}\\n\\\`\\\`\\\`\\n${entry?.content ?? ''}\\n\\\`\\\`\\\`\\n\\n---\\n`
+                  );
+                }
+
+                return {
+                  ok       : true,
+                  markdown : md.join('\\n'),
+                  files    : Object.entries(fileMap).map(([path, entry]) => ({
+                    path,
+                    content: entry?.content ?? '',
+                  })),
+                };
+              } catch (e:any) {
+                return { ok:false, error:e.message || String(e) };
+              }
+            })();
+          },
+        });
+
+        /* 3️⃣  relay the page-side result back to the popup */
+        sendResponse(result?.result ?? { ok:false, error:'Injection failed' });
+      })();
+      return true;
+
       case 'injectAndSave':
         (async () => {
           /* ── 1️⃣  Resolve target tab (popup → no sender.tab) ───────────────── */

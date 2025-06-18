@@ -33,6 +33,37 @@ export default function App() {
   const [notificationStatus, setNotificationStatus] = useState<'idle' | 'working' | 'finished'>('idle');
   const [notificationResult, setNotificationResult] = useState<{ok: boolean, error?: string} | null>(null);
 
+  // New state for the global token-count action
+  const [tokStatus, setTokStatus]   = useState<'idle'|'working'|'finished'>('idle');
+  const [tokResult, setTokResult]   = useState<{ok:boolean,total?:number,error?:string}|null>(null);
+
+  const handleTokenizeAll = async () => {
+    console.log('[POPUP] Tokenise button clicked');
+    setTokStatus('working');
+    setTokResult(null);
+    try {
+      const resp = await browser.runtime.sendMessage({ cmd: 'tokenizeAllFiles' });
+      console.log('[POPUP] Response from BG:', resp);
+      if (!resp?.ok) {
+        setTokResult({ ok:false, error:resp?.error || 'Background error' });
+      } else {
+        const allText = resp.files.map((f:any)=>f.content).join('\n\n');
+        const claudeTok = (window as any).ClaudeTokenizer;
+        const total   = claudeTok
+          ? claudeTok.encode(allText).length
+          : Math.ceil(allText.length / 4);    // fallback heuristic
+        console.log('[POPUP] Calculated tokens:', total);
+        setTokResult({ ok:true, total });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[POPUP] tokenizeAllFiles error', msg);
+      setTokResult({ ok:false, error:msg });
+    } finally {
+      setTokStatus('finished');
+      setTimeout(() => setTokStatus('idle'), 5000);
+    }
+  };
 
   useEffect(() => {
     storage.getItem<boolean>('local:extensionEnabled').then((extensionEnabled) => {
@@ -277,6 +308,23 @@ export default function App() {
                   ? `✅ Notification sent!`
                   : `❌ Error: ${notificationResult.error || 'Failed to send.'}`
                 }
+              </p>
+            )}
+
+            {/* ───────── Tokenise All Files ───────── */}
+            <button
+              style={{width:'100%', marginTop:'0.5rem' }}
+              onClick={handleTokenizeAll}
+              disabled={tokStatus === 'working'}
+            >
+              {tokStatus === 'working' ? 'Tokenising…' : 'Tokenise All Files'}
+            </button>
+            {tokStatus === 'finished' && tokResult && (
+              <p style={{ color: tokResult.ok ? 'lightgreen':'salmon', fontSize:'0.9em',
+                           marginTop:'0.5rem', wordBreak:'break-word', minHeight:'1em' }}>
+                {tokResult.ok
+                  ? `✅ Total tokens: ${tokResult.total}`
+                  : `❌ Error: ${tokResult.error}`}
               </p>
             )}
           </div>

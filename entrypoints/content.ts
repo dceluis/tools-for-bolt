@@ -137,6 +137,19 @@ class NotificationManager {
   }
 }
 
+import { browser } from 'wxt/browser';
+
+declare global {
+  interface Window {
+    boltAssistant?: {
+      ensureBoltFolderExpanded: () => Promise<void>;
+      getFileTreeAsList: () => Promise<string[]>;
+      findFileElementInTree: (fullPath: string) => HTMLElement | null;
+      tokenizeAllFiles: () => Promise<{ path: string; content: string }[]>;
+    };
+  }
+}
+
 export default defineContentScript({
   matches: ['<all_urls>'],
 
@@ -178,7 +191,7 @@ export default defineContentScript({
 
     const LOG_PREFIX = '[Plan Detector]';
     console.log(`${LOG_PREFIX} Initializing...`);
-    
+
     // --- File Tree Utilities ---
     const LOG_PREFIX_TREE = '[FileTree]';
     const EDITOR_PANEL_SELECTOR = '.i-ph\\:tree-structure-duotone';
@@ -251,10 +264,10 @@ export default defineContentScript({
             while (depth < pathStack.length) {
                 pathStack.pop();
             }
-            
+
             const parentPath = pathStack[pathStack.length - 1];
             const fullPath = `${parentPath}/${name}`;
-            
+
             fileList.push(fullPath);
 
             const isFolder = !!node.querySelector(FOLDER_ICON_SELECTOR);
@@ -262,7 +275,7 @@ export default defineContentScript({
                 pathStack.push(fullPath);
             }
         });
-        
+
         console.log(`${LOG_PREFIX_TREE} Successfully parsed file list:`, fileList);
         return fileList;
     }
@@ -304,7 +317,7 @@ export default defineContentScript({
         while (depth < pathStack.length) {
             pathStack.pop();
         }
-        
+
         const parentPath = pathStack[pathStack.length - 1];
         currentPath = `${parentPath}/${name}`;
 
@@ -323,6 +336,53 @@ export default defineContentScript({
       console.log(`${LOG_PREFIX_TREE} File ${fullPath} not found in the tree.`);
       return null;
     }
+
+    /* --------------------------------------------------------------- *
+     *  Expose helpers to the `window` object for injected scripts     *
+     * --------------------------------------------------------------- */
+    window.boltAssistant = {
+      ensureBoltFolderExpanded,
+      getFileTreeAsList,
+      findFileElementInTree,
+      async tokenizeAllFiles() {
+        const tree = document.querySelector(EDITOR_PANEL_SELECTOR)?.closest('.flex.flex-col');
+        if (!tree) return [];
+
+        /* expand folders recursively */
+        while (true) {
+          const collapsed = tree.querySelectorAll<HTMLElement>(`${NODE_SELECTOR}:has(${FOLDER_ICON_SELECTOR})`);
+          if (!collapsed.length) break;
+          collapsed.forEach(btn=>btn.click());
+          await wait(200);
+        }
+
+        /* iterate nodes, open each file & grab contents */
+        const files:{path:string,content:string}[] = [];
+        const stack=[''];                         // track folder path
+        for (const node of tree.querySelectorAll<HTMLElement>(NODE_SELECTOR)) {
+          const nameEl = node.querySelector<HTMLElement>(FILE_NAME_SELECTOR);
+          if (!nameEl) continue;
+          const name   = nameEl.textContent?.trim()||'unknown';
+          const pad    = parseInt(node.style.paddingLeft||'0',10);
+          const depth  = Math.round((pad-NODE_BASE_PADDING)/NODE_DEPTH_PADDING)+1;
+          while (depth < stack.length) stack.pop();
+          const parent = stack[stack.length-1];
+          const full   = `${parent}/${name}`;
+
+          const isFolder = !!node.querySelector(FOLDER_ICON_SELECTOR);
+          if (isFolder) {
+            stack.push(full);
+            continue;
+          }
+
+          node.click();
+          await wait(150);
+          const cm = (document.querySelector('.cm-content') as any)?.cmView?.view;
+          files.push({ path: full, content: cm ? cm.state.doc.toString() : '' });
+        }
+        return files;
+      },
+    };
 
 
     // --- Plan Detector and Button Logic ---
@@ -518,22 +578,52 @@ export default defineContentScript({
         /* -------- styles (green-tinted pills) -------------------------- */
         const style = document.createElement('style');
         style.textContent = `
-          .bolt-mini-toolbar          { display:flex; gap:.5rem; margin-left:auto; }
-          .bolt-mini-toolbar button   {
-            display:inline-flex; align-items:center; justify-content:center;
-            width:2rem; height:2rem; border-radius:9999px;
-            background:#14532d; color:#d1fae5;
-            transition:background .15s, transform .15s;
+          /* ——— Toolbar wrapper ——— */
+          .bolt-mini-toolbar {
+            display: flex;
+            align-items: center;
+            gap: .25rem;                 /* tighter spacing */
+            margin-left: auto;
+            background: #0d2d25;         /* darkish pill backdrop */
+            padding: .25rem .5rem;
+            border-radius: 9999px;
+          }
+
+          /* ——— Icon buttons ——— */
+          .bolt-mini-toolbar button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.75rem;              /* smaller icons */
+            height: 1.75rem;
+            border-radius: 9999px;
+            background: #14532d;
+            color: #d1fae5;
+            transition: background .15s, transform .15s;
           }
           .bolt-mini-toolbar button:hover    { background:#166534; transform:scale(1.08); }
           .bolt-mini-toolbar button:disabled { opacity:.5; cursor:not-allowed; }
+
+          /* ——— Token counter ——— */
           .bolt-mini-toolbar .badge {
-            display:inline-flex; align-items:center; justify-content:center;
-            min-width:1.6rem; height:1.6rem; padding:0 .25rem;
-            background:#064e3b; color:#a7f3d0; font-size:.7rem; font-weight:700;
-            border-radius:9999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 2.2rem;           /* larger pill */
+            height: 2.2rem;
+            padding: 0 .5rem;
+            background: #064e3b;
+            color: #a7f3d0;
+            font-size: .85rem;           /* bigger text */
+            font-weight: 700;
+            border-radius: 9999px;
+            margin-right: .25rem;        /* breathing space before icons */
           }
-          .bolt-mini-toolbar button svg { width:1.25rem; height:1.25rem; stroke-width:2; }
+
+          /* ——— SVG tweaks ——— */
+          .bolt-mini-toolbar button svg { width: 1rem; height: 1rem; stroke-width: 2; }
+
+          /* ——— Spinner ——— */
           @keyframes spin { to { transform: rotate(360deg); } }
           .spin { animation: spin 1s linear infinite; }
         `;
@@ -573,6 +663,32 @@ export default defineContentScript({
         bar.className = 'bolt-mini-toolbar';
         console.log('[MiniToolbar] Toolbar container created.');
 
+        /* ────────────  TOKEN COUNTER  ──────────── */
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = '0';
+        badge.title = 'Estimated token count for the current editor content (≈1 token / 4 chars)';
+
+        /* ---- Accurate Claude-3 token count every 2 s ---- */
+        setInterval(() => {
+          try {
+            const cmView = (document.querySelector('.cm-content') as any)?.cmView?.view;
+            if (!cmView) return;
+            const text = cmView.state.doc.toString();
+
+            const tokCount = Math.ceil(text.length / 4); // fallback heuristic
+
+            badge.textContent = String(tokCount);
+
+            /* emit sparse logs */
+            if (!(window as any)._miniToolbarTokenLog) {
+              console.log(`[MiniToolbar] Token count → ${badge.textContent} (heuristic)`);
+              (window as any)._miniToolbarTokenLog = true;
+              setTimeout(() => delete (window as any)._miniToolbarTokenLog, 5000);
+            }
+          } catch { /* ignore */ }
+        }, 2000);
+
         /* ────────────  OPEN .bolt/ignore  ──────────── */
         const btnOpen = document.createElement('button');
         btnOpen.innerHTML = ICON_FILE;
@@ -609,28 +725,6 @@ export default defineContentScript({
             notify(`Error: ${(e as Error).message}`, 'error');
           }
         };
-        bar.appendChild(btnOpen);
-
-        const badge = document.createElement('span');
-        badge.className = 'badge';
-        badge.textContent = '0';
-        badge.title = 'Estimated token count for the current editor content (approx. 1 token per 4 chars)';
-        bar.appendChild(badge);
-
-        setInterval(()=>{
-          try{
-            const cmView=(document.querySelector('.cm-content') as any)?.cmView?.view;
-            if(!cmView) return;
-            const len=cmView.state.doc.length;
-            badge.textContent=String(Math.ceil(len/4));  // crude approx.
-            /* emit sparse logs */
-            if(!(window as any)._miniToolbarTokenLog){
-              console.log(`[MiniToolbar] Token estimate updated → ${badge.textContent}`);
-              (window as any)._miniToolbarTokenLog=true;
-              setTimeout(()=>delete (window as any)._miniToolbarTokenLog,5000);
-            }
-          }catch{}
-        },2000);
 
         /* ────────────  RESET GENERATED SECTION  ──────────── */
         const btnReset = document.createElement('button');
@@ -662,6 +756,10 @@ export default defineContentScript({
             }, 1500);
           }
         };
+
+        /* --- append in the new order (badge first) --- */
+        bar.appendChild(badge);
+        bar.appendChild(btnOpen);
         bar.appendChild(btnReset);
 
         /* insert in DOM (inside header so it aligns with native pills) */
