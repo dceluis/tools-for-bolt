@@ -3,6 +3,16 @@ import { browser } from "wxt/browser";
 import { storage } from "#imports";
 import './App.css';
 
+/** Lazy-load the Claude tokenizer only when needed. */
+let claudeTokPromise: Promise<{ encode: (txt: string, a?: any, b?: any) => number[] }> | null = null;
+async function getClaudeTok() {
+  if (!claudeTokPromise) {
+    claudeTokPromise = import('@lenml/tokenizer-claude')
+      .then(m => m.fromPreTrained());        // ← the documented factory
+  }
+  return claudeTokPromise;
+}
+
 // Type for the detailed result from the background script
 type ProcessResult = {
   step: 'inject' | 'save' | 'complete';
@@ -47,11 +57,9 @@ export default function App() {
       if (!resp?.ok) {
         setTokResult({ ok:false, error:resp?.error || 'Background error' });
       } else {
-        const allText = resp.files.map((f:any)=>f.content).join('\n\n');
-        const claudeTok = (window as any).ClaudeTokenizer;
-        const total   = claudeTok
-          ? claudeTok.encode(allText).length
-          : Math.ceil(allText.length / 4);    // fallback heuristic
+        const allText = resp.files.map((f:any) => f.content).join('\n\n');
+        const tok     = await getClaudeTok();
+        const total   = tok.encode(allText, { add_special_tokens: true }).length;
         console.log('[POPUP] Calculated tokens:', total);
         setTokResult({ ok:true, total });
       }

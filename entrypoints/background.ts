@@ -287,24 +287,31 @@ export default defineBackground(() => {
             return (async () => {
               try {
                 /* ── locate & import the projects chunk ───────────────── */
+                console.log('[INJECT] tokenizeAllFiles: Starting direct import strategy.');
                 const link = document.querySelector('link[rel="modulepreload"][href*="projects-"]');
                 if (!link) throw new Error('projects bundle link not found');
                 const href = link.getAttribute('href')!;
                 const url  = new URL(href, location.origin).href;
+                console.log(`[INJECT] tokenizeAllFiles: Found projects bundle link: ${url}`);
                 const mod  = await import(/* @vite-ignore */ url);
+                console.log('[INJECT] tokenizeAllFiles: Projects module imported.');
 
                 /* ── find the store that holds files ─────────────────── */
                 const store = Object.values(mod).find((x:any) => x?.files?.get);
                 if (!store) throw new Error('files store export not detected');
+                console.log('[INJECT] tokenizeAllFiles: Files store detected.');
                 const fileMap: Record<string, any> = store.files.get();
+                console.log(`[INJECT] tokenizeAllFiles: Found ${Object.keys(fileMap).length} files.`);
 
                 /* ── assemble markdown snapshot ───────────────────────── */
+                console.log('[INJECT] tokenizeAllFiles: Assembling markdown snapshot.');
                 const md: string[] = ['# Files\\n'];
                 for (const [path, entry] of Object.entries(fileMap)) {
                   md.push(
                     `## File: ${path}\\n\\\`\\\`\\\`\\n${entry?.content ?? ''}\\n\\\`\\\`\\\`\\n\\n---\\n`
                   );
                 }
+                console.log('[INJECT] tokenizeAllFiles: Markdown snapshot assembled.');
 
                 return {
                   ok       : true,
@@ -315,6 +322,7 @@ export default defineBackground(() => {
                   })),
                 };
               } catch (e:any) {
+                console.error('[INJECT] tokenizeAllFiles: Error during execution:', e);
                 return { ok:false, error:e.message || String(e) };
               }
             })();
