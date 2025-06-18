@@ -9,6 +9,7 @@
     "@ai-sdk/openai": "^1.3.22",
     "@lenml/tokenizer-claude": "^3.4.2",
     "ai": "^4.1.34",
+    "ignore": "^7.0.5",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

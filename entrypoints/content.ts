@@ -663,31 +663,43 @@ export default defineContentScript({
         bar.className = 'bolt-mini-toolbar';
         console.log('[MiniToolbar] Toolbar container created.');
 
-        /* ────────────  TOKEN COUNTER  ──────────── */
+        /* ────────────  FILE COUNTER  ──────────── */
         const badge = document.createElement('span');
         badge.className = 'badge';
-        badge.textContent = '0';
-        badge.title = 'Estimated token count for the current editor content (≈1 token / 4 chars)';
+        badge.textContent = '…';
+        badge.title = 'Included / Total files in project';
 
-        /* ---- Accurate Claude-3 token count every 2 s ---- */
-        setInterval(() => {
+        /**
+         * Refresh badge with “INCLUDED / TOTAL” counts.
+         * INCLUDED = files that survive `.bolt/ignore`
+         * TOTAL    = every file in the store.
+         */
+        async function refreshFileCounts() {
           try {
-            const cmView = (document.querySelector('.cm-content') as any)?.cmView?.view;
-            if (!cmView) return;
-            const text = cmView.state.doc.toString();
+            /* 1️⃣  All files */
+            const totalRes: any = await browser.runtime.sendMessage({ cmd: 'tokenizeAllFiles' });
+            if (!totalRes?.ok) throw new Error(totalRes?.error || 'TOTAL query failed');
 
-            const tokCount = Math.ceil(text.length / 4); // fallback heuristic
+            /* 2️⃣  Respect `.bolt/ignore` */
+            const incRes: any = await browser.runtime.sendMessage({ cmd: 'tokenizeAllFilesRespectIgnore' });
+            if (!incRes?.ok) throw new Error(incRes?.error || 'IGNORE query failed');
 
-            badge.textContent = String(tokCount);
+            const total    = totalRes.files.length;
+            const included = incRes.files.length;
 
-            /* emit sparse logs */
-            if (!(window as any)._miniToolbarTokenLog) {
-              console.log(`[MiniToolbar] Token count → ${badge.textContent} (heuristic)`);
-              (window as any)._miniToolbarTokenLog = true;
-              setTimeout(() => delete (window as any)._miniToolbarTokenLog, 5000);
-            }
-          } catch { /* ignore */ }
-        }, 2000);
+            badge.textContent = `${included}/${total}`;
+            badge.title       = `${included} file${included !== 1 ? 's' : ''} included after .bolt/ignore out of ${total} total`;
+            console.log(`[MiniToolbar] File count updated → ${badge.textContent}`);
+          } catch (err) {
+            console.error('[MiniToolbar] refreshFileCounts error:', err);
+            badge.textContent = '0/0';
+            badge.title       = 'Error retrieving file counts';
+          }
+        }
+
+        /* First run + periodic refresh every 30 s */
+        refreshFileCounts();
+        setInterval(refreshFileCounts, 30000);
 
         /* ────────────  OPEN .bolt/ignore  ──────────── */
         const btnOpen = document.createElement('button');
@@ -765,6 +777,18 @@ export default defineContentScript({
         /* insert in DOM (inside header so it aligns with native pills) */
         header.appendChild(bar);
         console.log('[MiniToolbar] Toolbar appended inside header.');
+
+        // ─── Listen for saved .bolt/ignore events ─────────────────
+        window.addEventListener('message', event => {
+          if (event.data?.type === 'ignoreSaved') {
+            console.log('[MiniToolbar] ignoreSaved → refreshing counts');
+            refreshFileCounts();
+          }
+        });
+
+        // Initialise the page‐hook (only once per tab)
+        browser.runtime.sendMessage({ cmd:'initIgnoreListener' })
+          .catch(err => console.warn('[MiniToolbar] initIgnoreListener failed:', err));
       },250);
     }
   },

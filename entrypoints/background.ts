@@ -3,6 +3,7 @@ import { storage } from '#imports';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText } from 'ai';
+import ignore from 'ignore';
 
 /**
  * The single, powerful injected script that handles the entire file operation.
@@ -12,8 +13,7 @@ import { generateText } from 'ai';
  */
 async function createOrUpdateIgnoreFile(content: string) {
   const filePath = '/home/project/.bolt/ignore';
-  const fileName = '.ignore';
-  const folderName = '.bolt';
+
 
   /* ───── Section-ownership constants ───────────────────────────────────── */
   const GENERATED_START = '# ==== BOLT-ASSISTANT AUTO-GENERATED START ====';
@@ -98,7 +98,7 @@ async function createOrUpdateIgnoreFile(content: string) {
       let attempts = 0;
 
       const poll = () => {
-        const element = root.querySelector(selector) as T | null;
+        const element = root.querySelector<T>(selector);
         if (element && !(element as HTMLButtonElement).disabled) {
           resolve(element);
           return;
@@ -182,7 +182,7 @@ async function createOrUpdateIgnoreFile(content: string) {
       });
 
       console.log('[DevAction] Waiting for save button to be enabled...');
-      const saveButton = await waitForElement<HTMLButtonElement>('button:not(:disabled) .i-ph\\:floppy-disk-duotone');
+      const saveButton = await waitForElement<HTMLButtonElement>('button:not(:disabled) .i-ph\\:floppy-disk-duotone') as HTMLButtonElement;
       
       console.log('[DevAction] Clicking save...');
       saveButton.parentElement?.click();
@@ -234,7 +234,7 @@ export default defineBackground(() => {
       editorWrapper.cmView.view.dispatch({ changes: { from: 0, to: editorWrapper.cmView.view.state.doc.length, insert: textToInsert }, userEvent: 'input' });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return { step: 'inject', success: false, error: 'Could not find CodeMirror editor.' };
+      return { step: 'inject', success: false, error: errorMessage };
     }
     try {
       const saveButton = await waitForElement(() => {
@@ -244,7 +244,7 @@ export default defineBackground(() => {
       saveButton.click();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return { step: 'save', success: false, error: 'Could not find the save button after injection.' };
+      return { step: 'save', success: false, error: errorMessage };
     }
     return { step: 'complete', success: true };
   }
@@ -264,6 +264,80 @@ export default defineBackground(() => {
     }
 
     switch (msg.cmd) {
+      /**
+       * One‐time hook: inject into the page a watcher for
+       * saved .bolt/ignore updates.  It will postMessage({type:'ignoreSaved'}).
+       */
+      case 'initIgnoreListener': {
+        (async () => {
+          try {
+            const tabId = sender.tab?.id
+              ?? (await browser.tabs.query({ active:true, currentWindow:true }))[0]?.id;
+            if (!tabId) throw new Error('No active tab to hook.');
+
+            // avoid re‐injecting on the same tab
+            const key = '__ignoreListenerTabs';
+            if (!(globalThis as any)[key]) (globalThis as any)[key] = new Set<number>();
+            const tabs = (globalThis as any)[key] as Set<number>;
+            if (tabs.has(tabId)) {
+              sendResponse({ ok:true, note:'already-attached' });
+              return;
+            }
+            tabs.add(tabId);
+
+            // inject into the page’s MAIN world
+            await browser.scripting.executeScript({
+              target: { tabId },
+              world: 'MAIN',
+              func: () => {
+                if ((window as any).__boltIgnoreListener) return;
+                (window as any).__boltIgnoreListener = true;
+
+                const findStore = async () => {
+                  const link = document.querySelector<HTMLLinkElement>(
+                    'link[rel="modulepreload"][href*="projects-"]'
+                  );
+                  if (!link) throw new Error('projects bundle link not found');
+                  const url = new URL(link.href, location.origin).href;
+                  const mod = await import(/* @vite-ignore */ url);
+                  return Object.values(mod).find((x: any) => x?.files?.get);
+                };
+
+                (async () => {
+                  const store: any = await findStore();
+                  if (!store?.files?.get) return;
+
+                  const extract = (map: any) => {
+                    const p = Object.keys(map).find(f => f.endsWith('.bolt/ignore'));
+                    return p ? map[p].content : null;
+                  };
+                  let last = extract(store.files.get());
+
+                  const notify = () => window.postMessage({ type:'ignoreSaved' }, '*');
+
+                  if (store.files.subscribe) {
+                    store.files.subscribe((m: any) => {
+                      const curr = extract(m);
+                      if (curr !== last) { last = curr; notify(); }
+                    });
+                  } else {
+                    setInterval(() => {
+                      const curr = extract(store.files.get());
+                      if (curr !== last) { last = curr; notify(); }
+                    }, 1000);
+                  }
+                })().catch(console.warn);
+              }
+            });
+
+            sendResponse({ ok:true });
+          } catch (e: any) {
+            sendResponse({ ok:false, error:e.message });
+          }
+        })();
+        return true;
+      }
+
       case 'tokenizeAllFiles':
       (async () => {
         console.log('[BG] tokenizeAllFiles → received');
@@ -293,11 +367,11 @@ export default defineBackground(() => {
                 const href = link.getAttribute('href')!;
                 const url  = new URL(href, location.origin).href;
                 console.log(`[INJECT] tokenizeAllFiles: Found projects bundle link: ${url}`);
-                const mod  = await import(/* @vite-ignore */ url);
+                const mod: any = await import(/* @vite-ignore */ url);
                 console.log('[INJECT] tokenizeAllFiles: Projects module imported.');
 
                 /* ── find the store that holds files ─────────────────── */
-                const store = Object.values(mod).find((x:any) => x?.files?.get);
+                const store: any = Object.values(mod).find((x: any) => x?.files?.get);
                 if (!store) throw new Error('files store export not detected');
                 console.log('[INJECT] tokenizeAllFiles: Files store detected.');
                 const fileMap: Record<string, any> = store.files.get();
@@ -334,6 +408,74 @@ export default defineBackground(() => {
       })();
       return true;
 
+      /* ─── TOKENISE WITH .bolt/ignore ───────────────────────────── */
+      case 'tokenizeAllFilesRespectIgnore':
+        (async () => {
+          console.log('[BG] tokenizeAllFilesRespectIgnore → received');
+
+          /* 1️⃣  find target tab */
+          let tabId: number | undefined = sender.tab?.id ?? msg.tabId;
+          if (!tabId) {
+            const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+            tabId = activeTab?.id;
+          }
+          if (!tabId) {
+            sendResponse({ ok: false, error: 'Could not identify target tab.' });
+            return;
+          }
+
+          /* 2️⃣  reuse direct-import script from the plain tokeniser */
+          const [pageResult] = await browser.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+              return (async () => {
+                try {
+                  const link = document.querySelector('link[rel="modulepreload"][href*="projects-"]');
+                  if (!link) throw new Error('projects bundle link not found');
+                  const url = new URL(link.getAttribute('href')!, location.origin).href;
+                  const mod: any = await import(/* @vite-ignore */ url);
+                  const store: any = Object.values(mod).find((x: any) => x?.files?.get);
+                  if (!store) throw new Error('files store export not detected');
+                  const map: Record<string, any> = store.files.get();
+                  return {
+                    ok: true,
+                    files: Object.entries(map).map(([path, entry]) => ({
+                      path,
+                      content: entry?.content ?? '',
+                    })),
+                  };
+                } catch (e: any) {
+                  return { ok: false, error: e.message || String(e) };
+                }
+              })();
+            },
+          });
+
+          if (!pageResult?.result?.ok) {
+            sendResponse(pageResult?.result ?? { ok: false, error: 'Injection failed' });
+            return;
+          }
+
+          /* 3️⃣  filter through .bolt/ignore  -------------------------------- */
+          const files = pageResult.result!.files as { path: string; content: string }[];
+          const ignoreEntry = files.find((f) => f.path.endsWith('/.bolt/ignore'));
+
+          if (ignoreEntry) {
+            const ig = ignore();
+            ig.add(ignoreEntry.content.split('\n'));
+            const cleaned = files.filter((f) => {
+              const rel = f.path.replace(/^\/home\/project\//, '');
+              return !ig.ignores(rel);
+            });
+            console.log(`[BG] ignore rules trimmed ${files.length - cleaned.length} file(s).`);
+            sendResponse({ ok: true, files: cleaned });
+          } else {
+            console.log('[BG] No .bolt/ignore present – returning full set.');
+            sendResponse({ ok: true, files });
+          }
+        })();
+        return true;
       case 'injectAndSave':
         (async () => {
           /* ── 1️⃣  Resolve target tab (popup → no sender.tab) ───────────────── */
@@ -393,6 +535,70 @@ export default defineBackground(() => {
             sendResponse(result.result);
           } catch (e) {
             sendResponse({ ok: false, error: (e as Error).message });
+          }
+        })();
+        return true;
+
+      /* ────────────────────────────────────────────────────────────────
+       *  Build a COMPLETE `.bolt/ignore` from the current file-tree
+       * ──────────────────────────────────────────────────────────────── */
+
+      case 'createFullIgnoreFile':
+        (async () => {
+          try {
+            /* 1️⃣  Resolve the target tab */
+            let tabId: number | undefined = sender.tab?.id ?? msg.tabId;
+            if (!tabId) {
+              const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+              tabId = activeTab?.id;
+            }
+            if (!tabId) throw new Error('Could not identify target tab.');
+
+            /* 2️⃣  Ask the page for its full file list via the file-tree helpers */
+            const [treeRes] = await browser.scripting.executeScript({
+              target: { tabId },
+              world : 'ISOLATED',
+              func  : async () => {
+                try {
+                  if (!window.boltAssistant?.getFileTreeAsList) {
+                    throw new Error('boltAssistant helpers not found in page.');
+                  }
+                  await window.boltAssistant.ensureBoltFolderExpanded?.();
+                  const list = await window.boltAssistant.getFileTreeAsList();
+                  return { ok: true, fileList: list };
+                } catch (e:any) {
+                  return { ok:false, error: e.message || String(e) };
+                }
+              },
+            });
+
+            if (!treeRes?.result?.ok) {
+              sendResponse(treeRes?.result ?? { ok:false, error:'Could not retrieve file list.' });
+              return;
+            }
+
+            /* 3️⃣  Turn the list into ignore patterns (strip leading slash & project prefix) */
+            const relPaths = (treeRes.result.fileList as string[])
+              .map(p => p.replace(/^\/home\/project\//, '').replace(/^\//, ''))
+              .filter(Boolean)
+              .sort();
+
+            if (relPaths.length === 0) throw new Error('File list came back empty.');
+
+            const ignoreBody = relPaths.join('\n');
+
+            /* 4️⃣  Write / merge it via the existing helper */
+            const [writeRes] = await browser.scripting.executeScript({
+              target: { tabId },
+              world : 'MAIN',
+              func  : createOrUpdateIgnoreFile,
+              args  : [ignoreBody],
+            });
+
+            sendResponse(writeRes.result);
+
+          } catch (e) {
+            sendResponse({ ok:false, error: (e as Error).message });
           }
         })();
         return true;

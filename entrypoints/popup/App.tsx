@@ -47,6 +47,67 @@ export default function App() {
   const [tokStatus, setTokStatus]   = useState<'idle'|'working'|'finished'>('idle');
   const [tokResult, setTokResult]   = useState<{ok:boolean,total?:number,error?:string}|null>(null);
 
+  const [tokIgnStatus, setTokIgnStatus]   = useState<'idle'|'working'|'finished'>('idle');
+  const [tokIgnResult, setTokIgnResult]   = useState<{ok:boolean,total?:number,error?:string}|null>(null);
+
+  /* ─── Alt-Estimator (Bolt heuristic) ───────────────────────────── */
+  const [altTokStatus, setAltTokStatus] = useState<'idle'|'working'|'finished'>('idle');
+  const [altTokResult, setAltTokResult] = useState<{ok:boolean,total?:number,error?:string}|null>(null);
+
+  const [altTokAllStatus, setAltTokAllStatus] = useState<'idle'|'working'|'finished'>('idle');
+  const [altTokAllResult, setAltTokAllResult] = useState<{ok:boolean,total?:number,error?:string}|null>(null);
+
+  /** Bolt-style token estimator: bytes ÷ 3 × 0.8 */
+  const boltEstimate = (str:string) => {
+    const bytes = new TextEncoder().encode(str).byteLength;
+    return Math.round(bytes / 3 * 0.8);
+  };
+
+  const handleBoltEstimate = async () => {
+    console.log('[POPUP] Bolt-estimator button clicked');
+    setAltTokStatus('working');
+    setAltTokResult(null);
+    try {
+      /* honour .bolt/ignore so the result matches current workflow */
+      const resp = await browser.runtime.sendMessage({ cmd:'tokenizeAllFilesRespectIgnore' });
+      if (!resp?.ok) {
+        setAltTokResult({ ok:false, error:resp?.error || 'Background error' });
+      } else {
+        const allText = resp.files.map((f:any) => f.content).join('\n\n');
+        const total   = boltEstimate(allText);
+        setAltTokResult({ ok:true, total });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAltTokResult({ ok:false, error:msg });
+    } finally {
+      setAltTokStatus('finished');
+      setTimeout(() => setAltTokStatus('idle'), 5000);
+    }
+  };
+
+  const handleBoltEstimateAll = async () => {
+    console.log('[POPUP] Bolt-estimator (all files) button clicked');
+    setAltTokAllStatus('working');
+    setAltTokAllResult(null);
+    try {
+      const resp = await browser.runtime.sendMessage({ cmd:'tokenizeAllFiles' });
+      if (!resp?.ok) {
+        setAltTokAllResult({ ok:false, error:resp?.error || 'Background error' });
+      } else {
+        const allText = resp.files.map((f:any) => f.content).join('\n\n');
+        const total   = boltEstimate(allText);
+        setAltTokAllResult({ ok:true, total });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setAltTokAllResult({ ok:false, error:msg });
+    } finally {
+      setAltTokAllStatus('finished');
+      setTimeout(() => setAltTokAllStatus('idle'), 5000);
+    }
+  };
+
   const handleTokenizeAll = async () => {
     console.log('[POPUP] Tokenise button clicked');
     setTokStatus('working');
@@ -70,6 +131,30 @@ export default function App() {
     } finally {
       setTokStatus('finished');
       setTimeout(() => setTokStatus('idle'), 5000);
+    }
+  };
+
+  const handleTokenizeRespectIgnore = async () => {
+    console.log('[POPUP] Tokenise-ignore button clicked');
+    setTokIgnStatus('working');
+    setTokIgnResult(null);
+    try {
+      const resp = await browser.runtime.sendMessage({ cmd: 'tokenizeAllFilesRespectIgnore' });
+      console.log('[POPUP] Response from BG (ignore-aware):', resp);
+      if (!resp?.ok) {
+        setTokIgnResult({ ok: false, error: resp?.error || 'Background error' });
+      } else {
+        const allText = resp.files.map((f: any) => f.content).join('\n\n');
+        const tok = await getClaudeTok();
+        const total = tok.encode(allText, { add_special_tokens: true }).length;
+        setTokIgnResult({ ok: true, total });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setTokIgnResult({ ok: false, error: msg });
+    } finally {
+      setTokIgnStatus('finished');
+      setTimeout(() => setTokIgnStatus('idle'), 5000);
     }
   };
 
@@ -142,19 +227,10 @@ export default function App() {
       const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) throw new Error('Could not find active tab.');
 
-      const defaultContent = [
-        '# Common files to ignore',
-        'node_modules',
-        '.wxt',
-        '.output',
-        'dist',
-        '*.log',
-      ].join('\n');
-
+      /* 🔄 Ask the background script to build a FULL ignore list */
       const response: IgnoreWriteResult = await browser.runtime.sendMessage({
-        cmd: 'createOrUpdateIgnoreFile',
-        tabId: tab.id,
-        content: defaultContent,
+        cmd   : 'createFullIgnoreFile',
+        tabId : tab.id,
       });
 
       setIgnoreResult(response);
@@ -333,6 +409,72 @@ export default function App() {
                 {tokResult.ok
                   ? `✅ Total tokens: ${tokResult.total}`
                   : `❌ Error: ${tokResult.error}`}
+              </p>
+            )}
+
+            {/* ───────── Tokenise (respect .bolt/ignore) ───────── */}
+            <button
+              style={{ width: '100%', marginTop: '0.5rem' }}
+              onClick={handleTokenizeRespectIgnore}
+              disabled={tokIgnStatus === 'working'}
+            >
+              {tokIgnStatus === 'working' ? 'Tokenising…' : 'Tokenise (honour ignore)'}
+            </button>
+            {tokIgnStatus === 'finished' && tokIgnResult && (
+              <p style={{
+                color: tokIgnResult.ok ? 'lightgreen' : 'salmon',
+                fontSize: '0.9em',
+                marginTop: '0.5rem',
+                wordBreak: 'break-word',
+                minHeight: '1em',
+              }}>
+                {tokIgnResult.ok
+                  ? `✅ Total tokens: ${tokIgnResult.total}`
+                  : `❌ Error: ${tokIgnResult.error}`}
+              </p>
+            )}
+
+            {/* ───────── Bolt-style Heuristic Estimate (Respect Ignore) ───────── */}
+            <button
+              style={{ width:'100%', marginTop:'0.5rem' }}
+              onClick={handleBoltEstimate}
+              disabled={altTokStatus === 'working'}
+            >
+              {altTokStatus === 'working' ? 'Estimating…' : 'Heuristic Token Estimate (Ignore)'}
+            </button>
+            {altTokStatus === 'finished' && altTokResult && (
+              <p style={{
+                color: altTokResult.ok ? 'lightgreen' : 'salmon',
+                fontSize: '0.9em',
+                marginTop: '0.5rem',
+                wordBreak: 'break-word',
+                minHeight: '1em',
+              }}>
+                {altTokResult.ok
+                  ? `✅ Estimated tokens: ${altTokResult.total}`
+                  : `❌ Error: ${altTokResult.error}`}
+              </p>
+            )}
+
+            {/* ───────── Bolt-style Heuristic Estimate (All Files) ───────── */}
+            <button
+              style={{ width:'100%', marginTop:'0.5rem' }}
+              onClick={handleBoltEstimateAll}
+              disabled={altTokAllStatus === 'working'}
+            >
+              {altTokAllStatus === 'working' ? 'Estimating…' : 'Heuristic Token Estimate (All)'}
+            </button>
+            {altTokAllStatus === 'finished' && altTokAllResult && (
+              <p style={{
+                color: altTokAllResult.ok ? 'lightgreen' : 'salmon',
+                fontSize: '0.9em',
+                marginTop: '0.5rem',
+                wordBreak: 'break-word',
+                minHeight: '1em',
+              }}>
+                {altTokAllResult.ok
+                  ? `✅ Estimated tokens: ${altTokAllResult.total}`
+                  : `❌ Error: ${altTokAllResult.error}`}
               </p>
             )}
           </div>
