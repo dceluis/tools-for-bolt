@@ -138,6 +138,7 @@ class NotificationManager {
 }
 
 import { browser } from 'wxt/browser';
+import { storage } from '#imports';
 
 declare global {
   interface Window {
@@ -831,6 +832,13 @@ export default defineContentScript({
 
         /* insert in DOM (inside header so it aligns with native pills) */
         header.appendChild(bar);
+        // ── Hide toolbar when extension is disabled ─────────────────
+        storage.getItem<boolean>('local:extensionEnabled').then(isEnabled => {
+          bar.style.display = isEnabled !== false ? 'flex' : 'none';
+        });
+        storage.watch<boolean>('local:extensionEnabled', isEnabled => {
+          bar.style.display = isEnabled ? 'flex' : 'none';
+        });
         console.log('[MiniToolbar] Toolbar appended inside header.');
 
         // ─── Listen for saved .bolt/ignore events ─────────────────

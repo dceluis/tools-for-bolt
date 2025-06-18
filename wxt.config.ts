@@ -10,9 +10,9 @@ export default defineConfig({
 
   manifest: ({ browser, manifestVersion, mode, command }) => (
     {
-      name: "Page LLM",
-      version: "1.0",
-      description: "A simple extension to talk with the current page",
+      name: "Tools for Bolt",
+      version: "1.0.0",
+      description: "An extension to improve the bolt.new experience (experimental)",
 
       permissions: ['tabs', 'activeTab', 'scripting', 'storage'],
       host_permissions: ['<all_urls>'],
@@ -26,7 +26,7 @@ export default defineConfig({
       ...(browser === "firefox" && {
         browser_specific_settings: {
           gecko: {
-            id: "idk@dceluis",
+            id: "tools-for-bolt@dceluis",
             strict_min_version: "109.0"
           }
         }
