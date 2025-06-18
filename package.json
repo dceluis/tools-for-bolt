@@ -1,8 +1,8 @@
 {
-  "name": "wxt-react-starter",
-  "description": "manifest.json description",
+  "name": "Tools for Bolt",
+  "description": "An extension to improve the bolt.new experience (experimental)",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "dependencies": {
     "@ai-sdk/google": "^1.1.11",
