@@ -178,14 +178,17 @@ export default defineContentScript({
     };
 
     // Listen for requests to show notifications from the background script
-    browser.runtime.onMessage.addListener((message) => {
+    browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       // LOG: Message received in content script
       console.log('[ContentScript] Received message:', message);
 
       if (message.cmd === 'showNotification' && message.options) {
         console.log("[ContentScript] Matched 'showNotification' command. Calling manager.");
         notificationManager.show(message.options);
-        return true; // Acknowledge the message was handled.
+        /* respond immediately so the background `tabs.sendMessage` promise
+           resolves cleanly and no timeout error is raised */
+        sendResponse({ ok: true });
+        /* nothing returned → channel closes right after this synchronous reply */
       }
     });
 
@@ -663,16 +666,40 @@ export default defineContentScript({
         bar.className = 'bolt-mini-toolbar';
         console.log('[MiniToolbar] Toolbar container created.');
 
+        /* ────────────  DEBUG HELPERS  ──────────── */
+        const DBG  = true;                 // ↺ flip to silence all debug
+        const dbg  = (...a:any[]) => { if (DBG) console.debug('[MiniToolbar DBG]', ...a); };
+
         /* ────────────  FILE COUNTER  ──────────── */
         const badge = document.createElement('span');
         badge.className = 'badge';
         badge.textContent = '…';
         badge.title = 'Included / Total files in project';
 
+        /* A leaf-path has **no** other path that begins with it + “/”.   */
+        /** Build a Set of every directory prefix in one linear sweep. */
+        function buildDirSet(paths: string[]): Set<string> {
+          const dirs = new Set<string>();
+          for (const p of paths) {
+            let idx = p.indexOf('/');
+            while (idx !== -1) {
+              dirs.add(p.slice(0, idx));
+              idx = p.indexOf('/', idx + 1);
+            }
+          }
+          return dirs;
+        }
+
+        /** Leaf = path that never appears in the directory-set. */
+        function leafify(paths: string[]): string[] {
+          const dirSet = buildDirSet(paths);
+          return paths.filter(p => !dirSet.has(p));
+        }
+
         /**
-         * Refresh badge with “INCLUDED / TOTAL” counts.
+         * Refresh badge with “INCLUDED / TOTAL” *leaf-file* counts.
          * INCLUDED = files that survive `.bolt/ignore`
-         * TOTAL    = every file in the store.
+         * TOTAL    = every file in the store (leafs only)
          */
         async function refreshFileCounts() {
           try {
@@ -684,11 +711,39 @@ export default defineContentScript({
             const incRes: any = await browser.runtime.sendMessage({ cmd: 'tokenizeAllFilesRespectIgnore' });
             if (!incRes?.ok) throw new Error(incRes?.error || 'IGNORE query failed');
 
-            const total    = totalRes.files.length;
-            const included = incRes.files.length;
+            const totalPaths    = totalRes.files.map((f: any) => f.path);
+            const includedPaths = incRes.files.map((f: any) => f.path);
 
-            badge.textContent = `${included}/${total}`;
-            badge.title       = `${included} file${included !== 1 ? 's' : ''} included after .bolt/ignore out of ${total} total`;
+            /* Strip *all* directory entries before counting so folders like
+               “.bolt/” or “src/” can’t bloat the numerator (or denominator)
+               when every child file happens to be ignored. */
+            const dirSet             = buildDirSet(totalPaths);
+            const totalFilePaths     = totalPaths.filter(p => !dirSet.has(p));
+            const includedFilePaths  = includedPaths.filter(p => !dirSet.has(p));
+
+            dbg('── Raw path lists ──');
+            dbg(`TOTAL paths (${totalPaths.length}):`, totalPaths);
+            dbg(`INCLUDED paths (${includedPaths.length}):`, includedPaths);
+
+            /* ── Leaf calculations (directories already removed) ───── */
+            const totalLeafArr    = leafify(totalFilePaths);
+            const includedLeafArr = leafify(includedFilePaths);
+
+            const totalLeaf    = totalLeafArr.length;
+            const includedLeaf = includedLeafArr.length;
+
+            /* ── Diff sets: what’s missing / unexpected? ───────────── */
+            const ignoredLeafs = totalLeafArr.filter(p => !includedLeafArr.includes(p));
+            const strayLeafs   = includedLeafArr.filter(p => !totalLeafArr.includes(p));
+
+            dbg('── Leaf analysis ──');
+            dbg(`totalLeaf = ${totalLeafArr.length}`, totalLeafArr);
+            dbg(`includedLeaf = ${includedLeafArr.length}`, includedLeafArr);
+            dbg(`ignoredLeaf (excluded) ${ignoredLeafs.length}:`, ignoredLeafs);
+            dbg(`strayLeaf (???   ) ${strayLeafs.length}:`, strayLeafs);
+
+            badge.textContent = `${includedLeaf}/${totalLeaf}`;
+            badge.title       = `${includedLeaf} leaf-file${includedLeaf !== 1 ? 's' : ''} included after .bolt/ignore out of ${totalLeaf} total`;
             console.log(`[MiniToolbar] File count updated → ${badge.textContent}`);
           } catch (err) {
             console.error('[MiniToolbar] refreshFileCounts error:', err);

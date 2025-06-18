@@ -5,6 +5,17 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 import ignore from 'ignore';
 
+/* ────────────────────────────────────────────────────────────────
+ *  NEW HELPER  ▸ buildFullIgnore
+ *  Returns a sorted list of *leaf-files* only (no directory lines)
+ *  so every file is ignored individually.                      */
+function buildFullIgnore(relPaths: string[]): string[] {
+  /* A path is a “leaf” when no other path starts with `path + '/'` */
+  return relPaths
+    .filter(p => !relPaths.some(o => o !== p && o.startsWith(p + '/')))
+    .sort();
+}
+
 /**
  * The single, powerful injected script that handles the entire file operation.
  * It acts like a user: finds the file, clicks it, and edits it.
@@ -293,14 +304,23 @@ export default defineBackground(() => {
                 if ((window as any).__boltIgnoreListener) return;
                 (window as any).__boltIgnoreListener = true;
 
-                const findStore = async () => {
-                  const link = document.querySelector<HTMLLinkElement>(
-                    'link[rel="modulepreload"][href*="projects-"]'
-                  );
-                  if (!link) throw new Error('projects bundle link not found');
-                  const url = new URL(link.href, location.origin).href;
-                  const mod = await import(/* @vite-ignore */ url);
-                  return Object.values(mod).find((x: any) => x?.files?.get);
+                const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+                /** Robustly wait for the projects store to become ready. */
+                const findStore = async (retries = 30): Promise<any> => {
+                  for (let i = 0; i < retries; i++) {
+                    const link = document.querySelector<HTMLLinkElement>(
+                      'link[rel="modulepreload"][href*="projects-"]'
+                    );
+                    if (link) {
+                      const url  = new URL(link.href, location.origin).href;
+                      const mod  = await import(/* @vite-ignore */ url);
+                      const st   = Object.values(mod).find((x: any) => x?.files?.get);
+                      if (st) return st;
+                    }
+                    await sleep(250);   // give the bundle time to register
+                  }
+                  throw new Error('files store export not detected (timeout)');
                 };
 
                 (async () => {
@@ -577,15 +597,14 @@ export default defineBackground(() => {
               return;
             }
 
-            /* 3️⃣  Turn the list into ignore patterns (strip leading slash & project prefix) */
+            /* 3️⃣  Turn the list into ignore patterns  */
             const relPaths = (treeRes.result.fileList as string[])
               .map(p => p.replace(/^\/home\/project\//, '').replace(/^\//, ''))
-              .filter(Boolean)
-              .sort();
+              .filter(Boolean);
 
             if (relPaths.length === 0) throw new Error('File list came back empty.');
 
-            const ignoreBody = relPaths.join('\n');
+            const ignoreBody = buildFullIgnore(relPaths).join('\n');
 
             /* 4️⃣  Write / merge it via the existing helper */
             const [writeRes] = await browser.scripting.executeScript({
@@ -606,7 +625,7 @@ export default defineBackground(() => {
       case 'generateIgnoreFileFromPlan':
         (async () => {
           const LOG_PREFIX = '[IgnoreGen]';
-          const tabId = sender.tab?.id; // Ensure tabId is available for this case too
+          const tabId = sender.tab?.id;                     // caller is content-script
           try {
             console.log(`${LOG_PREFIX} Received request to generate .ignore file for tab ${tabId}.`);
             const { plan, fileList } = msg;
@@ -615,8 +634,17 @@ export default defineBackground(() => {
               throw new Error(`Missing required parameters: plan=${!!plan}, fileList=${!!fileList}, tabId=${!!tabId}`);
             }
 
-            console.log(`${LOG_PREFIX} Plan content:\n`, plan);
-            console.log(`${LOG_PREFIX} File list:\n`, fileList.join('\n'));
+            /* ──────────────────────────────────────────────────────────
+             * 1️⃣  Strip folders → keep only LEAF files
+             *     (A leaf has no other path that starts with it + '/')
+             * ────────────────────────────────────────────────────────── */
+            const relPaths    = (fileList as string[])
+                                  .map(p => p.replace(/^\/?home\/project\//, '').replace(/^\//, ''))
+                                  .filter(Boolean);
+            const leafFiles   = buildFullIgnore(relPaths);     // reuse helper
+
+            console.log(`${LOG_PREFIX} Leaf files (${leafFiles.length}):`, leafFiles);
+            console.log(`${LOG_PREFIX} Plan text:\n${plan}`);
 
             // 1. Get LLM settings from storage
             const [provider, googleKey, googleModel, openaiKey, openaiModel] = await Promise.all([
@@ -641,21 +669,23 @@ export default defineBackground(() => {
             }
              console.log(`${LOG_PREFIX} Using model: ${modelName}`);
 
-            // 2. Construct prompt
-            const systemPrompt = "You are an expert programmer's assistant. Your task is to analyze an AI-generated plan and a project's file list, and then create the content for an `.ignore` file. This `.ignore` file acts as a WHITELIST. It should ignore everything by default (`*`) and then un-ignore (`!`) only the specific files and folders necessary to execute the plan. Be precise. Only include files mentioned or clearly implied by the plan. Do not include files that are not relevant to the task. The final output must be ONLY the raw text content for the file, without any explanation or markdown code block fences like ```.";
-            const userPrompt = `
-Here is the project's complete file list:
-\`\`\`
-${fileList.join('\n')}
-\`\`\`
+            /* 2️⃣  Prompt: ask for a *plain* whitelist */
+            const systemPrompt = `You are an expert developer helping minimise token usage when generating a .bolt/ignore file.
+Produce the **smallest possible** whitelist of existing source-file paths required to implement the PLAN.
+Rules:
+1. Output *only* relative file paths that already exist.
+2. One path per line — no bullets, numbering, code fences, or prose.
+3. **Never** list folders, wildcard patterns, lock files, dot-files, or anything inside \`.bolt/\`.
+4. If the PLAN mentions a single component, output exactly that path.
+5. If no files are needed, output the single word \`NONE\`.`;
 
-Here is the plan I want to execute:
----
+            const userPrompt = `Repository leaf files:
+${leafFiles.join('\n')}
+
+PLAN:
 ${plan}
----
 
-Generate the content for the .bolt/ignore file now.
-`;
+List the *minimum* set of files (one per line) that must **not** be ignored.`;
             console.log(`${LOG_PREFIX} Sending prompt to ${modelName}.`);
 
             // 3. Call LLM
@@ -663,31 +693,37 @@ Generate the content for the .bolt/ignore file now.
               model: llm(modelName),
               system: systemPrompt,
               prompt: userPrompt,
+              temperature: 0.2,
             });
 
             console.log(`${LOG_PREFIX} Raw response from LLM:\n---\n${resultText}\n---`);
             
-            // 4. Parse response (basic cleaning)
-            let ignoreContent = resultText.trim();
-            const codeBlockRegex = /```(?:\w+\n)?([\s\S]+?)```/;
-            const match = ignoreContent.match(codeBlockRegex);
-            if (match) {
-              console.log(`${LOG_PREFIX} Found markdown code block, extracting content.`);
-              ignoreContent = match[1].trim();
-            }
-            console.log(`${LOG_PREFIX} Parsed .ignore content to be written:\n---\n${ignoreContent}\n---`);
+            /* 3️⃣  Parse whitelist result → array */
+            const rawWhitelist = resultText
+              .split('\n')
+              .map(l => l.trim().replace(/^[-*]\s*/, ''))
+              .filter(Boolean);
+            const whitelist = rawWhitelist.filter(p => leafFiles.includes(p));
 
-            if (!ignoreContent) {
-              throw new Error("LLM returned empty content.");
+            console.log(`${LOG_PREFIX} Whitelist (${whitelist.length}):`, whitelist);
+
+            /* 4️⃣  Build FULL ignore (all leaf files) & comment out whitelist */
+            const fullIgnoreLines = buildFullIgnore(relPaths);
+            const ignoreBody = fullIgnoreLines
+              .map(line => whitelist.includes(line) ? `# ${line}` : line)
+              .join('\n');
+
+            if (ignoreBody.trim().length === 0) {
+              throw new Error('Generated ignore body is empty.');
             }
 
-            // 5. Write file by injecting script
+            /* 5️⃣  Write merged ignore via existing helper */
             console.log(`${LOG_PREFIX} Injecting script to write file to tab ${tabId}.`);
             const [injectionResult] = await browser.scripting.executeScript({
               target: { tabId: tabId },
               world: 'MAIN',
               func: createOrUpdateIgnoreFile,
-              args: [ignoreContent],
+              args: [ignoreBody],
             });
             
             console.log(`${LOG_PREFIX} File write operation result:`, injectionResult.result);
