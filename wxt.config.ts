@@ -33,4 +33,9 @@ export default defineConfig({
       })
     }
   ),
+  vite: ({ mode }) => ({
+    esbuild: {
+      drop: mode === 'production' ? ['console', 'debugger'] : []
+    }
+  })
 })

@@ -807,7 +807,7 @@ export default defineContentScript({
           try {
             const resp = await browser.runtime.sendMessage({ cmd: 'cleanupIgnoreFile' });
             if (resp?.ok) {
-              notify('Auto-generated section removed', 'success');
+              notify('The ignore file was cleaned up', 'success');
               btnReset.innerHTML = ICON_CHECK;
             } else {
               throw new Error(resp?.error || 'Unknown error');
