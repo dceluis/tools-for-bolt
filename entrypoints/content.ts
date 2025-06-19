@@ -662,6 +662,20 @@ export default defineContentScript({
             <line  x1="6"  y1="6" x2="18" y2="18" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>`;
 
+        /* ——— Add-All Ignore (file + asterisk) ——— */
+        const ICON_ADDALL = `
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <!-- file outline -->
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline stroke-linecap="round" stroke-linejoin="round" points="14 2 14 8 20 8"/>
+            <!-- asterisk -->
+            <line x1="12" y1="8"  x2="12" y2="16" stroke-linecap="round" stroke-linejoin="round"/>
+            <line x1="8"  y1="12" x2="16" y2="12" stroke-linecap="round" stroke-linejoin="round"/>
+            <line x1="9"  y1="9"  x2="15" y2="15" stroke-linecap="round" stroke-linejoin="round"/>
+            <line x1="15" y1="9"  x2="9"  y2="15" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>`;
+
         /* toolbar root, injected *inside* header and pushed right */
         const bar = document.createElement('div');
         bar.className = 'bolt-mini-toolbar';
@@ -794,6 +808,37 @@ export default defineContentScript({
           }
         };
 
+        /* ────────────  ADD-ALL IGNORE  ──────────── */
+        const btnAddAll = document.createElement('button');
+        btnAddAll.innerHTML = ICON_ADDALL;
+        btnAddAll.title = 'Generate .bolt/ignore ignoring EVERY file';
+        btnAddAll.setAttribute('aria-label', 'Generate full ignore');
+
+        btnAddAll.onclick = async () => {
+          console.log('[MiniToolbar] "Generate full .bolt/ignore" button clicked.');
+          btnAddAll.disabled = true;
+          btnAddAll.innerHTML = ICON_SPIN;
+          try {
+            const resp = await browser.runtime.sendMessage({ cmd: 'createFullIgnoreFile' });
+            if (resp?.ok) {
+              notify('All files added to ignore list', 'success');
+              btnAddAll.innerHTML = ICON_CHECK;
+              await refreshFileCounts();
+            } else {
+              throw new Error(resp?.error || 'Unknown error');
+            }
+          } catch (e) {
+            console.error('[MiniToolbar] createFullIgnoreFile error:', e);
+            notify(`Add-all failed: ${(e as Error).message}`, 'error');
+            btnAddAll.innerHTML = ICON_CROSS;
+          } finally {
+            setTimeout(() => {
+              btnAddAll.disabled = false;
+              btnAddAll.innerHTML = ICON_ADDALL;
+            }, 1500);
+          }
+        };
+
         /* ────────────  RESET GENERATED SECTION  ──────────── */
         const btnReset = document.createElement('button');
         btnReset.innerHTML = ICON_RESET;
@@ -828,6 +873,7 @@ export default defineContentScript({
         /* --- append in the new order (badge first) --- */
         bar.appendChild(badge);
         bar.appendChild(btnOpen);
+        bar.appendChild(btnAddAll);
         bar.appendChild(btnReset);
 
         /* insert in DOM (inside header so it aligns with native pills) */

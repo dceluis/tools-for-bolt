@@ -12,7 +12,7 @@ export default defineConfig({
   manifest: ({ browser, manifestVersion, mode, command }) => (
     {
       name: "Tools for Bolt",
-      version: "1.0.0",
+      version: "1.0.1",
       description: "An extension to improve the bolt.new experience (experimental)",
 
       permissions: ['tabs', 'activeTab', 'scripting', 'storage'],
