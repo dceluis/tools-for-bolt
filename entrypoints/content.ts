@@ -418,73 +418,82 @@ export default defineContentScript({
         const LOG_PREFIX_ACTION = '[CustomAction]';
         console.log(`${LOG_PREFIX_ACTION} 'Generate Ignore' button clicked.`);
 
-        // Provide user feedback
+        /* ── UI feedback ───────────────────────────────────────────── */
         const originalText = buttonTextNode.nodeValue;
-        newButton.disabled = true;
-        newIcon.className = 'text-lg i-ph:hourglass animate-spin';
+        newButton.disabled      = true;
+        newIcon.className       = 'text-lg i-ph:hourglass animate-spin';
         buttonTextNode.nodeValue = ' Generating...';
 
         try {
-            // Extract plan text
-            const markdownContent = planMessageEl.querySelector('._MarkdownContent_19116_1');
-            if (!markdownContent) throw new Error("Could not find plan content in message.");
-            const planText = (markdownContent as HTMLElement).innerText;
-            console.log(`${LOG_PREFIX_ACTION} Extracted plan text.`);
+          /* ── 1️⃣  Extract plan text ───────────────────────────────── */
+          /* Bolt often renders two markdown blocks:
+             • one hidden inside the collapsed “Thoughts” section
+             • one visible – the real plan we need
+             We pick the first **visible** `_MarkdownContent_` block; if none are
+             visible (edge-case), we fall back to the first block or a `.prose`
+             element.                                                     */
+          const mdBlocks = Array.from(
+            planMessageEl.querySelectorAll<HTMLElement>('[class*="_MarkdownContent_"]'),
+          );
+          const mdEl =
+            mdBlocks.find(el => el.offsetParent !== null) ||   // visible block
+            mdBlocks[0] ||
+            planMessageEl.querySelector<HTMLElement>('.prose');
 
-            // Get file tree
-            const fileList = await getFileTreeAsList();
+          if (!mdEl) throw new Error('Plan markdown element not found.');
 
-            // Send to background script
-            console.log(`${LOG_PREFIX_ACTION} Sending plan and file list to background script.`);
-            // The background script will get the tabId from the message sender object.
-            const response = await browser.runtime.sendMessage({
-                cmd: 'generateIgnoreFileFromPlan',
-                plan: planText,
-                fileList: fileList,
-            });
+          /* textContent still works even if the node is visually hidden */
+          const planText = (mdEl.textContent || '').trim();
+          if (!planText) throw new Error('Plan extraction yielded an empty string.');
 
-            console.log(`${LOG_PREFIX_ACTION} Received response from background:`, response);
-            if (response?.ok) {
-                console.log(`${LOG_PREFIX_ACTION} ✅ SUCCESS: .bolt/ignore file operation completed.`);
-                newIcon.className = 'text-lg i-ph:check-circle-fill text-green-500';
-                buttonTextNode.nodeValue = ' Done!';
-            } else {
-                throw new Error(response?.error || 'Unknown error from background script.');
-            }
+          console.log(`${LOG_PREFIX_ACTION} Extracted plan text (${planText.length} chars).`);
+
+          /* ── 2️⃣  Get the complete file list from the tree ─────────── */
+          const fileList = await getFileTreeAsList();
+          console.log(`${LOG_PREFIX_ACTION} Retrieved file list (${fileList.length}).`);
+
+          /* ── 3️⃣  Ask background to build/write .bolt/ignore ───────── */
+          const response = await browser.runtime.sendMessage({
+            cmd: 'generateIgnoreFileFromPlan',
+            plan: planText,
+            fileList,
+          });
+
+          if (response?.ok) {
+            console.log(`${LOG_PREFIX_ACTION} ✅ .bolt/ignore generated.`);
+            newIcon.className       = 'text-lg i-ph:check-circle-fill text-green-500';
+            buttonTextNode.nodeValue = ' Done!';
+          } else {
+            throw new Error(response?.error || 'Unknown error from background script.');
+          }
 
         } catch (err) {
-            const errorMsg = err instanceof Error ? err.message : String(err);
-            console.error(`${LOG_PREFIX_ACTION} ❌ FAILED:`, errorMsg);
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`${LOG_PREFIX_ACTION} ❌ FAILED:`, message);
 
-            /* If the failure is due to a missing API key, guide the user
-               with an info notification that can open the settings page. */
-            if (/api key.*not configured/i.test(errorMsg)) {
-              notificationManager.show({
-                message: 'AI provider API key is not set. Open the extension settings to add it.',
-                type: 'info',
-                duration: 10000,
-                action: {
-                  text: 'Open Settings',
-                  callback: () => {
-                    // Ask the background script to open the options page
-                    browser.runtime.sendMessage({ cmd: 'openOptions' });
-                  },
-                },
-              });
-            } else {
-              alert(`Custom Action Failed:\n${errorMsg}`);
-            }
+          /* Missing-API-key helper */
+          if (/api key.*not configured/i.test(message)) {
+            notificationManager.show({
+              message : 'AI provider API key is not set. Open the extension settings to add it.',
+              type    : 'info',
+              duration: 10_000,
+              action  : {
+                text    : 'Open Settings',
+                callback: () => browser.runtime.sendMessage({ cmd: 'openOptions' }),
+              },
+            });
+          } else {
+            alert(`Custom Action Failed:\n${message}`);
+          }
 
-            newIcon.className = 'text-lg i-ph:x-circle-fill text-red-500';
-            buttonTextNode.nodeValue = ' Failed';
-
+          newIcon.className       = 'text-lg i-ph:x-circle-fill text-red-500';
+          buttonTextNode.nodeValue = ' Failed';
         } finally {
-            // Reset button after a delay
-            setTimeout(() => {
-                newButton.disabled = false;
-                newIcon.className = 'text-lg i-ph:sparkle-fill';
-                buttonTextNode.nodeValue = originalText;
-            }, 5000);
+          setTimeout(() => {
+            newButton.disabled      = false;
+            newIcon.className       = 'text-lg i-ph:sparkle-fill';
+            buttonTextNode.nodeValue = originalText;
+          }, 5000);
         }
       });
 
