@@ -10,14 +10,16 @@ _A handy browser extension to supercharge your Bolt chat and code experience, no
   When your assistant posts a “Plan,” a **Generate Ignore** button appears below the message. Click it and the extension will build or update your `.bolt/ignore` file, keeping your workspace tidy and your AI calls focused.
 
 - **Mini Toolbar in the Code Tab**  
-  A compact badge shows **Included / Total** file counts (leaf files only), plus two quick buttons:
-  - 📄 **Open `.bolt/ignore`** in the file tree  
-  - ♻️ **Reset generated section** (clears out just the auto-generated block)
+  A compact badge shows **Included / Total** file counts (leaf files only), plus three quick buttons:
+![image](https://github.com/user-attachments/assets/fdd59547-e134-414e-8dbe-e3b130976736)
+  - 📄 **Open `.bolt/ignore`** in the file tree
+  - ♻️ **Fill `.bolt/ignore`** (add every file in your app to `.bolt/ignore`)
+  - ♻️ **Reset `.bolt/ignore`** (clears out just the auto-generated block)
 
 - **In-page Notifications**  
   Success, error or info toasts pop up right inside the Bolt interface, no need to hunt the console.
 
-- **Enable / Disable Toggle**  
+- **Enable / Disable Toggle**
   Turn all features on or off from the extension popup.
 
 ---
@@ -27,15 +29,15 @@ _A handy browser extension to supercharge your Bolt chat and code experience, no
 > **No store release yet, so you’ll need to install from the `dist/` folder.**  
 
 1. **Download**  
-   - For Chrome-based browsers: `dist/tools-for-bolt-1.0.0-chrome.zip`  
-   - For Firefox:         `dist/tools-for-bolt-1.0.0-firefox.zip`
+   - For Chrome-based browsers: `dist/tools-for-bolt-1.0.*-chrome.zip`  
+   - For Firefox:         `dist/tools-for-bolt-1.0.*-firefox.zip`
 
 2. **Chrome / Edge / Opera**  
-   - Unzip `tools-for-bolt-1.0.0-chrome.zip`.  
+   - Unzip `tools-for-bolt-1.0.*-chrome.zip`.  
    - Go to `chrome://extensions/`, enable **Developer mode**, click **Load unpacked**, and select the unzipped folder.
 
 3. **Firefox**  
-   - Unzip `tools-for-bolt-1.0.0-firefox.zip`.  
+   - Unzip `tools-for-bolt-1.0.*-firefox.zip`.  
    - Open `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on…**, and choose the `manifest.json` inside the folder.
 
 ---
@@ -91,7 +93,7 @@ _A handy browser extension to supercharge your Bolt chat and code experience, no
   It tells Bolt which files to skip when tokenizing or previewing, saving you time and tokens.
 
 - **No API key?**  
-  You can still use the toolbar and badge; ignore-generation will prompt you to add one.
+  You can still use the toolbar and badge; AI ignore-generation will prompt you to add one.
 
 - **Will it touch my code?**  
   Only the `.bolt/ignore` file, and only inside the auto-generated markers. All other files remain untouched.
