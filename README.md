@@ -9,12 +9,16 @@ _A handy browser extension to supercharge your Bolt chat and code experience, no
 - **One-click “Generate Ignore”**  
   When your assistant posts a “Plan,” a **Generate Ignore** button appears below the message. Click it and the extension will build or update your `.bolt/ignore` file, keeping your workspace tidy and your AI calls focused.
 
+  ![image](https://github.com/user-attachments/assets/111b323a-4191-45a0-a7bc-913cd5fecd47)
+
+
 - **Mini Toolbar in the Code Tab**  
   A compact badge shows **Included / Total** file counts (leaf files only), plus three quick buttons:
-![image](https://github.com/user-attachments/assets/fdd59547-e134-414e-8dbe-e3b130976736)
   - 📄 **Open `.bolt/ignore`** in the file tree
   - ♻️ **Fill `.bolt/ignore`** (add every file in your app to `.bolt/ignore`)
-  - ♻️ **Reset `.bolt/ignore`** (clears out just the auto-generated block)
+  - ♻️ **Reset `.bolt/ignore`** (clears out just the auto-generated block
+
+  ![image](https://github.com/user-attachments/assets/fdd59547-e134-414e-8dbe-e3b130976736)
 
 - **In-page Notifications**  
   Success, error or info toasts pop up right inside the Bolt interface, no need to hunt the console.
