@@ -178,6 +178,138 @@ export default defineContentScript({
       notificationManager.show({ message, type, duration });
     };
 
+    /* ────────────────────────────────────────────────────────────────
+     *  🔄 Re-enable “Implement this plan” buttons after page reload   *
+     *  -------------------------------------------------------------- *
+     *  1.  Finds every disabled button whose text includes            *
+     *      “Implement this plan”.                                     *
+     *  2.  Removes the disabled state and attaches a click handler    *
+     *      that copies that plan’s markdown into the chat input.      *
+     *  3.  Marks each processed button with data-reenabled to ensure  *
+     *      idempotency.                                               *
+     * ──────────────────────────────────────────────────────────────── */
+    /* -------------------------------------------------------------- *
+     *  Inject a fresh, enabled  “Reuse plan” button next to Bolt’s   *
+     *  own disabled one. Runs idempotently on every mutation so it   *
+     *  also works for lazy-loaded history.                           *
+     * -------------------------------------------------------------- */
+    function reinstateImplementButtons() {
+      if (Date.now() - lastMutation > REINSTATE_LIFESPAN) {
+        console.log('[ImplementFix] Idle timeout reached – skipping reinstatement.');
+        return;
+      }
+
+      const implBtns = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('button[disabled]')
+      ).filter(
+        (b) =>
+          b.textContent?.trim().toLowerCase().includes('implement this') &&
+          !b.closest('[data-resend-added="true"]')
+      );
+
+      if (!implBtns.length) {
+        console.log('[ImplementFix] No disabled "Implement this change" buttons found that need reinstatement.');
+        return;
+      }
+      console.log(`[ImplementFix] Decorating ${implBtns.length} cached plan(s).`);
+
+      implBtns.forEach((origBtn) => {
+        const container = origBtn.parentElement as HTMLElement;
+        if (!container) {
+          console.warn('[ImplementFix] Original button has no parent container.');
+          return;
+        }
+
+        const planMessageEl = origBtn.closest<HTMLElement>('[data-message-id]');
+        if (!planMessageEl) {
+          console.warn('[ImplementFix] Original button not inside a message element with data-message-id.');
+          return;
+        }
+        const messageId = planMessageEl.dataset.messageId;
+        console.log(`[ImplementFix] Processing button for message ID: ${messageId || 'N/A'}`);
+
+        /* forge the twin */
+        const newBtn = origBtn.cloneNode(true) as HTMLButtonElement;
+        newBtn.disabled = false;
+        newBtn.classList.remove('disabled', 'w-full'); // Remove 'disabled' and 'w-full'
+        newBtn.classList.add('bg-green-700', 'hover:bg-green-800'); // Add green background
+        newBtn.querySelector('.i-ph\\:code')?.remove();
+
+        /* icon swap */
+        const icon = document.createElement('div');
+        icon.className = 'text-lg i-ph:sparkle-fill'; // Use sparkle icon for consistency
+        newBtn.prepend(icon);
+
+        /* text swap */
+        newBtn.childNodes.forEach((n) => {
+          if (n.nodeType === Node.TEXT_NODE) n.textContent = ' Reuse plan';
+        });
+
+        newBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log(`[ImplementFix] "Reuse plan" button clicked for message ID: ${messageId || 'N/A'}`);
+
+          const mdBlocks = Array.from(
+            planMessageEl.querySelectorAll<HTMLElement>('[class*="_MarkdownContent_"]'),
+          );
+
+          const mdEl =
+            // Sort by depth relative to planMessageEl and pick the shallowest
+            mdBlocks.sort((a, b) => {
+              const getDepth = (el: HTMLElement, relativeTo: HTMLElement): number => {
+                let depth = 0;
+                let current: HTMLElement | null = el;
+                while (current && current !== relativeTo) {
+                  current = current.parentElement;
+                  depth++;
+                }
+                return current === relativeTo ? depth : Infinity;
+              };
+              return getDepth(a, planMessageEl) - getDepth(b, planMessageEl);
+            })[0] ||
+            planMessageEl.querySelector<HTMLElement>('.prose');
+
+          if (!mdEl) {
+            console.warn(`[ImplementFix] Markdown element not found for message ID: ${messageId || 'N/A'}`);
+            return;
+          }
+
+          const planText = (mdEl.textContent || '').trim();
+          if (!planText) {
+            console.warn(`[ImplementFix] Extracted plan text is empty for message ID: ${messageId || 'N/A'}`);
+            return;
+          }
+          console.log(`[ImplementFix] Extracted plan text for message ID: ${messageId || 'N/A'} (length: ${planText.length})`);
+
+          const input =
+            document.querySelector<HTMLTextAreaElement>('textarea') ??
+            document.querySelector<HTMLElement>('div[contenteditable="true"]');
+          if (!input) {
+            alert('Could not find the chat input field.');
+            console.error('[ImplementFix] Chat input field not found.');
+            return;
+          }
+
+          if ('value' in input) {
+            (input as HTMLTextAreaElement).value = planText;
+          } else {
+            (input as HTMLElement).innerText = planText;
+          }
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          console.log(`[ImplementFix] Plan text copied to input for message ID: ${messageId || 'N/A'}`);
+        });
+
+        container.appendChild(newBtn);
+        (container.parentElement as HTMLElement).dataset.resendAdded = 'true';
+        console.log(`[ImplementFix] New "Reuse plan" button appended for message ID: ${messageId || 'N/A'}`);
+      });
+    }
+
+    /* ── observer idle-timeout (15 s of calm ⇒ stop) ─────────────── */
+    let lastMutation = Date.now();
+    const REINSTATE_LIFESPAN = 15_000;
+
     // Listen for requests to show notifications from the background script
     browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       // LOG: Message received in content script
@@ -429,15 +561,25 @@ export default defineContentScript({
           /* Bolt often renders two markdown blocks:
              • one hidden inside the collapsed “Thoughts” section
              • one visible – the real plan we need
-             We pick the first **visible** `_MarkdownContent_` block; if none are
-             visible (edge-case), we fall back to the first block or a `.prose`
-             element.                                                     */
+             We pick the top-most _MarkdownContent_` block; if none are
+             visible (edge-case), we fallback to a `.prose` element.                                                     */
           const mdBlocks = Array.from(
             planMessageEl.querySelectorAll<HTMLElement>('[class*="_MarkdownContent_"]'),
           );
           const mdEl =
-            mdBlocks.find(el => el.offsetParent !== null) ||   // visible block
-            mdBlocks[0] ||
+            // Sort by depth relative to planMessageEl and pick the shallowest
+            mdBlocks.sort((a, b) => {
+              const getDepth = (el: HTMLElement, relativeTo: HTMLElement): number => {
+                let depth = 0;
+                let current: HTMLElement | null = el;
+                while (current && current !== relativeTo) {
+                  current = current.parentElement;
+                  depth++;
+                }
+                return current === relativeTo ? depth : Infinity;
+              };
+              return getDepth(a, planMessageEl) - getDepth(b, planMessageEl);
+            })[0] ||
             planMessageEl.querySelector<HTMLElement>('.prose');
 
           if (!mdEl) throw new Error('Plan markdown element not found.');
@@ -510,22 +652,48 @@ export default defineContentScript({
 
       const checkLatestPlan = () => {
         const chatContainer = document.querySelector('section[aria-label="Chat"]');
-        if (!chatContainer) return;
+        if (!chatContainer) {
+          console.log(`${LOG_PREFIX} Chat container not found.`);
+          return;
+        }
         const allMessages = chatContainer.querySelectorAll<HTMLElement>(':scope > [data-message-id]');
-        if (allMessages.length === 0) return;
+        if (allMessages.length === 0) {
+          console.log(`${LOG_PREFIX} No messages found in chat container.`);
+          return;
+        }
         const lastMessageEl = allMessages[allMessages.length - 1];
+        const lastMessageId = lastMessageEl.dataset.messageId;
+        console.log(`${LOG_PREFIX} Checking latest message with ID: ${lastMessageId || 'N/A'}`);
+
         const buttonContainer = lastMessageEl.querySelector<HTMLElement>('.flex.items-center.gap-2.flex-wrap');
-        if (!buttonContainer || buttonContainer.dataset.customButtonAdded === 'true') return;
+        if (!buttonContainer) {
+          console.log(`${LOG_PREFIX} No button container found for message ID: ${lastMessageId || 'N/A'}`);
+          return;
+        }
+        if (buttonContainer.dataset.customButtonAdded === 'true') {
+          console.log(`${LOG_PREFIX} Custom button already added for message ID: ${lastMessageId || 'N/A'}`);
+          return;
+        }
+
         const isPlanStructure = lastMessageEl.querySelector('h2')?.textContent?.includes('Plan') || buttonContainer.textContent?.includes('Implement');
-        if (!isPlanStructure) return;
+        if (!isPlanStructure) {
+          console.log(`${LOG_PREFIX} Message ID: ${lastMessageId || 'N/A'} is not a plan structure.`);
+          return;
+        }
+
         const hasEnabledButton = Array.from(buttonContainer.querySelectorAll('button')).some(b => !b.disabled);
         if (hasEnabledButton) {
-          console.log(`${LOG_PREFIX} 🎉 Latest message is a complete plan. Appending button.`);
+          console.log(`${LOG_PREFIX} 🎉 Latest message ID: ${lastMessageId || 'N/A'} is a complete plan and has an enabled button. Appending custom button.`);
           appendCustomButton(lastMessageEl);
+        } else {
+          console.log(`${LOG_PREFIX} Message ID: ${lastMessageId || 'N/A'} is a plan structure but has no enabled button.`);
         }
       };
 
-      observer = new MutationObserver(checkLatestPlan);
+      observer = new MutationObserver(() => {
+        reinstateImplementButtons();        // lazy-load coverage
+        checkLatestPlan();                  // existing logic
+      });
 
       const startupInterval = setInterval(() => {
         const chatContainer = document.querySelector('section[aria-label="Chat"]');

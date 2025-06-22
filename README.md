@@ -60,16 +60,27 @@ _A handy browser extension to supercharge your Bolt chat and code experience, no
 
 ## 🔄 Recommended Workflow
 
-> **Plan Mode → Reset**, **Build Mode → Generate**
+> **Reset → Refresh → Plan Mode → Generate Ignore → Refresh → Build Mode**
 
-1. **Plan Mode**  
-   - After your assistant publishes or updates a plan, switch to the **Code** tab and click the **♻️ Reset** button.
-   - This removes any previous auto-generated block in `.bolt/ignore` so you start fresh.
+1.  **Reset Ignore**
+    - Before working on a new feature, click the **♻️ Reset** button.
+    - This removes any previous auto-generated block in `.bolt/ignore` so you start fresh.
 
-2. **Build Mode**  
-   - When you’re ready to finalize which files to include, click **Generate Ignore**.
-   - The extension will generate a proper whitelist inside `.bolt/ignore`.
+2.  **Refresh Bolt**
+    - **Refresh the page** to ensure Bolt loads the full file context after resetting.
 
+3.  **Plan Mode**
+    - Create a new plan for your feature using plan mode as normal.
+
+4.  **Generate Ignore**
+    - When you’re ready to implement your plan, click **Generate Ignore** below the assistant's message.
+    - The extension will generate a proper whitelist inside `.bolt/ignore`.
+
+5.  **Refresh Bolt (Again)**
+    - **Refresh the page** once more to ensure Bolt loads the updated file context using the new ignore rules.
+
+6.  **Build Mode**
+    - Proceed with your build, knowing Bolt has the correct and reduced file context.
 ---
 
 ## 🎯 How to Use
